@@ -1,0 +1,35 @@
+{
+	"schemaVersion": 1,
+	"id": "spotymc",
+	"version": "${version}",
+	"name": "SpotyMC",
+	"description": "This is an example description! Tell everyone what your mod is about!",
+	"authors": [
+		"Me!"
+	],
+	"contact": {
+		"homepage": "https://fabricmc.net/",
+		"sources": "https://github.com/FabricMC/fabric-example-mod"
+	},
+	"license": "CC0-1.0",
+	"icon": "assets/spotymc/icon2.png",
+	"environment": "*",
+	"entrypoints": {
+		"client": [
+			"xien.jxsh.spotymc.Spotymc"
+		]
+	},
+	"mixins": [
+		"spotymc.mixins.json",
+		{
+			"config": "spotymc.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.19.3",
+		"minecraft": "~26.2",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}
