@@ -1,0 +1,133 @@
+name: Build librespot binaries
+
+# This workflow is the "equivalent origin" for the librespot binaries shipped by SpotyMC.
+# It builds librespot from a pinned upstream commit/tag, on GitHub-hosted runners, from a
+# workflow file that is public and auditable. Anyone (including a Modrinth reviewer) can:
+#   1. See exactly which upstream commit was built (LIBRESPOT_REF below).
+#   2. Re-run this workflow themselves and diff the resulting SHA-256 checksums.
+#   3. Read the full build log for every artifact in the Actions tab.
+#
+# Trigger: push a tag like "librespot-v0.6.0-build1" to cut a new release of binaries.
+
+on:
+  push:
+    tags:
+      - "librespot-*"
+  workflow_dispatch: {}
+
+env:
+  # Pin this to an exact upstream commit SHA (preferred) or tag. Never track a branch head.
+  LIBRESPOT_REPO: "https://github.com/librespot-org/librespot.git"
+  LIBRESPOT_REF: "v0.6.0"   # <-- update deliberately; every change here is a reviewable diff
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: librespot.exe
+            asset_name: librespot-windows-x86_64.exe
+
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: librespot
+            asset_name: librespot-linux-x86_64
+
+          - os: macos-13        # Intel runner
+            target: x86_64-apple-darwin
+            artifact_name: librespot
+            asset_name: librespot-macos-x86_64
+
+          - os: macos-14        # Apple Silicon runner
+            target: aarch64-apple-darwin
+            artifact_name: librespot
+            asset_name: librespot-macos-arm64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout librespot at pinned ref
+        uses: actions/checkout@v4
+        with:
+          repository: librespot-org/librespot
+          ref: ${{ env.LIBRESPOT_REF }}
+          path: librespot-src
+
+      - name: Record exact commit built
+        shell: bash
+        run: |
+          cd librespot-src
+          echo "Building librespot @ $(git rev-parse HEAD)"
+          git rev-parse HEAD > ../built-commit-${{ matrix.target }}.txt
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux build dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y build-essential libasound2-dev
+
+      - name: Build (release, locked deps)
+        shell: bash
+        run: |
+          cd librespot-src
+          cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Stage artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "librespot-src/target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" \
+             "dist/${{ matrix.asset_name }}"
+
+      - name: Checksum
+        shell: bash
+        run: |
+          cd dist
+          sha256sum "${{ matrix.asset_name }}" > "${{ matrix.asset_name }}.sha256"
+          cat "${{ matrix.asset_name }}.sha256"
+
+      - name: Upload build artifact (for PR / manual runs)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: |
+            dist/${{ matrix.asset_name }}
+            dist/${{ matrix.asset_name }}.sha256
+            built-commit-${{ matrix.target }}.txt
+
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/librespot-')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/${{ matrix.asset_name }}
+            dist/${{ matrix.asset_name }}.sha256
+          body: |
+            Built from ${{ env.LIBRESPOT_REPO }} @ ${{ env.LIBRESPOT_REF }}
+            by this repository's public build-librespot.yml workflow (run: ${{ github.run_id }}).
+
+  # Combines every per-platform checksum into one signed-looking manifest so reviewers
+  # (and the installer's checksum verification) have a single file to check against.
+  manifest:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/librespot-')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Build combined SHA256SUMS
+        run: |
+          find artifacts -name "*.sha256" -exec cat {} \; | sort > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: SHA256SUMS.txt
