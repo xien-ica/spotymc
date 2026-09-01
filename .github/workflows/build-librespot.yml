@@ -48,7 +48,7 @@ jobs:
             artifact_name: librespot
             asset_name: librespot-linux-x86_64
 
-          - os: macos-13        # Intel runner
+          - os: macos-15-intel  # Intel runner
             target: x86_64-apple-darwin
             artifact_name: librespot
             asset_name: librespot-macos-x86_64
