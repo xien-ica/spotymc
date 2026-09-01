@@ -89,7 +89,7 @@ jobs:
         shell: pwsh
         run: |
           $newPath = ($env:PATH -split ';' | Where-Object { $_ -notmatch '\\Git\\usr\\bin' }) -join ';'
-          echo "PATH=$newPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo $newPath | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       # ring (pulled in via rustls) needs NASM to assemble its optimized routines on Windows;
       # Linux/macOS don't hit this since they use different codegen paths. Speculative fix for
