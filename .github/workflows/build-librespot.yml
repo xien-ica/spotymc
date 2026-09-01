@@ -80,6 +80,17 @@ jobs:
         with:
           arch: x64
 
+      # Git for Windows bundles its own link.exe (in Git\usr\bin), which sits on PATH ahead of
+      # MSVC's linker on GitHub's Windows runners. Once vcvars is set up above, that Git-provided
+      # link.exe can still shadow the real MSVC linker and get invoked instead, causing link
+      # failures. Stripping Git's usr/bin from PATH ensures the MSVC link.exe from vcvars wins.
+      - name: Fix PATH for Windows linker (Windows only)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $newPath = ($env:PATH -split ';' | Where-Object { $_ -notmatch '\\Git\\usr\\bin' }) -join ';'
+          echo "PATH=$newPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       # ring (pulled in via rustls) needs NASM to assemble its optimized routines on Windows;
       # Linux/macOS don't hit this since they use different codegen paths. Speculative fix for
       # the windows-latest job's build failure -- confirm against the actual error log too.
