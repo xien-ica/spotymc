@@ -61,7 +61,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout librespot at pinned ref
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: librespot-org/librespot
           ref: ${{ env.LIBRESPOT_REF }}
@@ -83,6 +83,10 @@ jobs:
       # initialized MSVC environment, and ends up passing GCC-style flags (e.g. -Wno-unused-parameter)
       # to cl.exe, which rejects them with "D8021: invalid numeric argument". This sets up vcvars
       # correctly before the build runs.
+      # NOTE: ilammy/msvc-dev-cmd has no Node 24-compatible release as of this writing, so it will
+      # still print the Node 20 deprecation warning even pinned at @v1 (the latest available tag).
+      # It still runs fine under GitHub's forced-Node24 shim; consider TheMrMilchmann/setup-msvc-dev
+      # (an actively maintained fork) if you want to clear the warning.
       - name: Setup MSVC environment (Windows only)
         if: matrix.os == 'windows-2022'
         uses: ilammy/msvc-dev-cmd@v1
@@ -95,6 +99,8 @@ jobs:
       # does not support setting PATH that way (only $GITHUB_PATH is honored for PATH, and it only
       # supports prepending, not removing entries). So the filtering has to happen in the SAME step
       # that runs cargo, which is why "Build" below is split into a Windows-specific branch.
+      # NOTE: ilammy/setup-nasm also has no Node 24-compatible release as of this writing; same
+      # caveat as msvc-dev-cmd above applies.
       - name: Install NASM (Windows only)
         if: matrix.os == 'windows-2022'
         uses: ilammy/setup-nasm@v1
@@ -138,7 +144,7 @@ jobs:
           cat "${{ matrix.asset_name }}.sha256"
 
       - name: Upload build artifact (for PR / manual runs)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.asset_name }}
           path: |
@@ -148,7 +154,7 @@ jobs:
 
       - name: Publish to GitHub Release
         if: startsWith(github.ref, 'refs/tags/librespot-')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/${{ matrix.asset_name }}
@@ -164,13 +170,13 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/librespot-')
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           path: artifacts
       - name: Build combined SHA256SUMS
         run: |
           find artifacts -name "*.sha256" -exec cat {} \; | sort > SHA256SUMS.txt
           cat SHA256SUMS.txt
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: SHA256SUMS.txt
