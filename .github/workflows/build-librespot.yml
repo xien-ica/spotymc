@@ -18,7 +18,12 @@ on:
 env:
   # Pin this to an exact upstream commit SHA (preferred) or tag. Never track a branch head.
   LIBRESPOT_REPO: "https://github.com/librespot-org/librespot.git"
-  LIBRESPOT_REF: "v0.6.0"   # <-- update deliberately; every change here is a reviewable diff
+  # v0.6.0 hit a Spotify-side backend change that broke content resolution for every librespot
+  # client ("Track should be available, but no alternatives found" / tracks reported "not
+  # available" for everything) -- tracked upstream as librespot-org/librespot#1527, fixed in
+  # v0.7.0. Pinned to v0.8.0 (latest stable as of this writing) rather than v0.7.0 exactly, since
+  # it includes that fix plus everything else merged since.
+  LIBRESPOT_REF: "v0.8.0"   # <-- update deliberately; every change here is a reviewable diff
 
 permissions:
   contents: write
@@ -43,7 +48,7 @@ jobs:
             artifact_name: librespot
             asset_name: librespot-linux-x86_64
 
-          - os: macos-15-intel        # Intel runner
+          - os: macos-13        # Intel runner
             target: x86_64-apple-darwin
             artifact_name: librespot
             asset_name: librespot-macos-x86_64
