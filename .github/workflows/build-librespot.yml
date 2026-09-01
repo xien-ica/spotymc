@@ -70,6 +70,13 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # ring (pulled in via rustls) needs NASM to assemble its optimized routines on Windows;
+      # Linux/macOS don't hit this since they use different codegen paths. Speculative fix for
+      # the windows-latest job's build failure -- confirm against the actual error log too.
+      - name: Install NASM (Windows only)
+        if: matrix.os == 'windows-latest'
+        uses: ilammy/setup-nasm@v1
+
       - name: Install Linux build dependencies
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y build-essential libasound2-dev
@@ -91,7 +98,12 @@ jobs:
         shell: bash
         run: |
           cd dist
-          sha256sum "${{ matrix.asset_name }}" > "${{ matrix.asset_name }}.sha256"
+          # macOS doesn't ship sha256sum by default (only shasum -a 256); Linux/Windows-Git-Bash do.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${{ matrix.asset_name }}" > "${{ matrix.asset_name }}.sha256"
+          else
+            shasum -a 256 "${{ matrix.asset_name }}" > "${{ matrix.asset_name }}.sha256"
+          fi
           cat "${{ matrix.asset_name }}.sha256"
 
       - name: Upload build artifact (for PR / manual runs)
