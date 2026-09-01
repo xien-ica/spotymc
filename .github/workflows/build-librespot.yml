@@ -29,7 +29,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
+          # windows-latest migrated to Visual Studio 2026 ("18.x") in June 2026. The old cmake
+          # crate pulled in transitively by aws-lc-sys (a rustls dependency) doesn't recognize
+          # that version string and panics with "unsupported or unknown VisualStudio version:
+          # 18.0". Pinning to windows-2022 keeps the VS 2022 toolchain these crates understand.
+          - os: windows-2022
             target: x86_64-pc-windows-msvc
             artifact_name: librespot.exe
             asset_name: librespot-windows-x86_64.exe
@@ -75,7 +79,7 @@ jobs:
       # to cl.exe, which rejects them with "D8021: invalid numeric argument". This sets up vcvars
       # correctly before the build runs.
       - name: Setup MSVC environment (Windows only)
-        if: matrix.os == 'windows-latest'
+        if: matrix.os == 'windows-2022'
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -87,7 +91,7 @@ jobs:
       # supports prepending, not removing entries). So the filtering has to happen in the SAME step
       # that runs cargo, which is why "Build" below is split into a Windows-specific branch.
       - name: Install NASM (Windows only)
-        if: matrix.os == 'windows-latest'
+        if: matrix.os == 'windows-2022'
         uses: ilammy/setup-nasm@v1
 
       - name: Install Linux build dependencies
@@ -95,7 +99,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y build-essential libasound2-dev
 
       - name: Build (release, locked deps) [Windows]
-        if: matrix.os == 'windows-latest'
+        if: matrix.os == 'windows-2022'
         shell: pwsh
         run: |
           $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -notmatch '\\Git\\usr\\bin' }) -join ';'
@@ -103,7 +107,7 @@ jobs:
           cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Build (release, locked deps) [non-Windows]
-        if: matrix.os != 'windows-latest'
+        if: matrix.os != 'windows-2022'
         shell: bash
         run: |
           cd librespot-src
