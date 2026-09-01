@@ -3,13 +3,13 @@
 	"id": "spotymc",
 	"version": "${version}",
 	"name": "SpotyMC",
-	"description": "This is an example description! Tell everyone what your mod is about!",
+	"description": "Brings Spotify Connect and real-time synced lyrics into Minecraft, so you can see what's playing and control playback without alt-tabbing out of the game.",
 	"authors": [
-		"Me!"
+		"xien-ica"
 	],
 	"contact": {
-		"homepage": "https://fabricmc.net/",
-		"sources": "https://github.com/FabricMC/fabric-example-mod"
+		"homepage": "https://github.com/xien-ica/spotymc",
+		"sources": "https://github.com/xien-ica/spotymc"
 	},
 	"license": "CC0-1.0",
 	"icon": "assets/spotymc/icon2.png",
