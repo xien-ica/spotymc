@@ -80,20 +80,12 @@ jobs:
         with:
           arch: x64
 
-      # Git for Windows bundles its own link.exe (in Git\usr\bin), which sits on PATH ahead of
-      # MSVC's linker on GitHub's Windows runners. Once vcvars is set up above, that Git-provided
-      # link.exe can still shadow the real MSVC linker and get invoked instead, causing link
-      # failures. Stripping Git's usr/bin from PATH ensures the MSVC link.exe from vcvars wins.
-      - name: Fix PATH for Windows linker (Windows only)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          $newPath = ($env:PATH -split ';' | Where-Object { $_ -notmatch '\\Git\\usr\\bin' }) -join ';'
-          echo $newPath | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      # ring (pulled in via rustls) needs NASM to assemble its optimized routines on Windows;
-      # Linux/macOS don't hit this since they use different codegen paths. Speculative fix for
-      # the windows-latest job's build failure -- confirm against the actual error log too.
+      # Git for Windows bundles its own link.exe (in Git\usr\bin), which shadows MSVC's linker on
+      # GitHub's Windows runners and gets invoked instead of the real one. NOTE: this can't be fixed
+      # by writing a filtered PATH to $GITHUB_ENV from a separate step -- GitHub Actions explicitly
+      # does not support setting PATH that way (only $GITHUB_PATH is honored for PATH, and it only
+      # supports prepending, not removing entries). So the filtering has to happen in the SAME step
+      # that runs cargo, which is why "Build" below is split into a Windows-specific branch.
       - name: Install NASM (Windows only)
         if: matrix.os == 'windows-latest'
         uses: ilammy/setup-nasm@v1
@@ -102,7 +94,16 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y build-essential libasound2-dev
 
-      - name: Build (release, locked deps)
+      - name: Build (release, locked deps) [Windows]
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -notmatch '\\Git\\usr\\bin' }) -join ';'
+          cd librespot-src
+          cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Build (release, locked deps) [non-Windows]
+        if: matrix.os != 'windows-latest'
         shell: bash
         run: |
           cd librespot-src
