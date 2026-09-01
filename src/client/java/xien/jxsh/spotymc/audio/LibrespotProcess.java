@@ -6,22 +6,21 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
- * Wraps the librespot subprocess. librespot is NOT bundled with the mod --
- * download a binary for your OS from <a href="https://github.com/librespot-org/librespot/releases">...</a>
- * (or `cargo install librespot`) and point ModConfig#librespotPath at it.
+ * Wraps the librespot subprocess. The binary is obtained via {@link LibrespotInstaller}
+ * (or supplied manually) and pointed at by ModConfig#librespotPath.
  * <p>
- * It's launched in Spotify Connect "discovery" (Zeroconf) mode: no
- * credentials are ever given to it, and none are stored by this mod. Open
- * the real Spotify app once, tap the device icon, and select the configured
- * device name (default "Minecraft") -- Spotify's own app hands librespot its
- * session, exactly like connecting to a smart speaker.
+ * Launched in Spotify Connect "discovery" (Zeroconf) mode: no credentials are ever
+ * given to it. Open the real Spotify app, tap the device icon, and select the
+ * configured device name (default "Minecraft") — Spotify hands librespot its session
+ * exactly like connecting to a smart speaker.
  * <p>
- * Raw PCM (44100Hz, 16-bit signed, stereo, little-endian -- libre spot's
- * default) streams on stdout via --backend pipe, which AudioPlayer reads.
- * Volume commands sent through the normal Web API (SpotifyApiClient#setVolume)
- * are applied by libre spot's own soft mixer before the PCM ever reaches us.
+ * Raw PCM (44100 Hz, 16-bit signed, stereo, little-endian) streams on stdout via
+ * {@code --backend pipe}, which {@link AudioPlayer} reads. Volume commands sent
+ * through the Web API are applied by librespot's own soft mixer before the PCM
+ * reaches us.
  */
 public class LibrespotProcess {
 	private final String binaryPath;
@@ -38,32 +37,35 @@ public class LibrespotProcess {
 		this.initialVolume = initialVolume;
 	}
 
-	/** Starts librespot in zeroconf/discovery mode. Safe to call again after stop(). */
+	/** Starts librespot in zeroconf/discovery mode. Safe to call again after {@link #stop()}. */
 	public synchronized void start() throws IOException {
 		if (isRunning()) return;
 
-		List<String> command = new ArrayList<>();
+		// Fixed capacity avoids a couple of internal resizes for a known argument list.
+		List<String> command = new ArrayList<>(16);
 		command.add(binaryPath);
-		command.add("--name"); command.add(deviceName);
-		command.add("--device-type"); command.add("gameconsole");
-		command.add("--backend"); command.add("pipe"); // no --device -> raw PCM goes to stdout
-		command.add("--bitrate"); command.add(String.valueOf(bitrate));
-		// Without this, librespot starts at its own internal default volume (which is what was
-		// showing up in-game as an unexpected ~49%) until Spotify Connect syncs a "real" value.
-		command.add("--initial-volume"); command.add(String.valueOf(Math.clamp(initialVolume, 0, 100)));
-		// librespot defaults to a logarithmic volume curve, which maps --initial-volume through
-		// that curve rather than treating it as a plain percentage -- e.g. asking for 80 can come
-		// back from Spotify Connect reporting more like 71%. Forcing linear makes the number we
-		// pass in match the number Spotify Connect (and this mod's volume slider) actually shows.
-		command.add("--volume-ctrl"); command.add("linear");
-		command.add("--disable-audio-cache"); // no reason to fill disk under .Minecraft for this
+		command.add("--name");
+		command.add(deviceName);
+		command.add("--device-type");
+		command.add("gameconsole");
+		command.add("--backend");
+		command.add("pipe");                    // raw PCM on stdout
+		command.add("--bitrate");
+		command.add(String.valueOf(bitrate));
+		// Without this, librespot starts at its own internal default (~49 %) until
+		// Spotify Connect syncs a real value.
+		command.add("--initial-volume");
+		command.add(String.valueOf(Math.clamp(initialVolume, 0, 100)));
+		// Force linear curve so the number we pass matches what Spotify Connect reports.
+		command.add("--volume-ctrl");
+		command.add("linear");
+		command.add("--disable-audio-cache");   // no reason to fill disk under .minecraft
 
 		ProcessBuilder builder = new ProcessBuilder(command);
 		process = builder.start();
 
-		// librespot logs (including zeroconf/login diagnostics) go to stderr; stdout is
-		// audio-only. Drain stderr on a daemon thread so it can't block the process and so
-		// you can see connection issues in the game log.
+		// Drain stderr on a daemon thread so logs can't block the process and so
+		// connection issues appear in the game log.
 		Thread stderrDrain = new Thread(this::drainStderr, "librespot-stderr");
 		stderrDrain.setDaemon(true);
 		stderrDrain.start();
@@ -78,11 +80,11 @@ public class LibrespotProcess {
 				System.out.println("[librespot] " + line);
 			}
 		} catch (IOException ignored) {
-			// process was stopped from under us; nothing to do
+			// process was stopped from under us
 		}
 	}
 
-	/** Raw PCM stream: 44100Hz, 16-bit signed, stereo, little-endian. Null if not started. */
+	/** Raw PCM stream: 44100 Hz, 16-bit signed, stereo, little-endian. Null if not started. */
 	public InputStream audioStream() {
 		return process != null ? process.getInputStream() : null;
 	}
@@ -91,10 +93,26 @@ public class LibrespotProcess {
 		return process != null && process.isAlive();
 	}
 
+	/**
+	 * Stops the process and blocks until it has actually exited.
+	 * {@link Process#destroy()} only requests termination; on Windows the OS can take a
+	 * moment to release the exe's file handle, so a caller that deletes the binary
+	 * immediately after would still hit "file in use". Waiting here guarantees the
+	 * handle is released by the time this method returns.
+	 */
 	public synchronized void stop() {
-		if (process != null) {
-			process.destroy();
-			process = null;
+		if (process == null) return;
+		Process p = process;
+		process = null;
+		p.destroy();
+		try {
+			if (!p.waitFor(5, TimeUnit.SECONDS)) {
+				p.destroyForcibly();
+				p.waitFor(5, TimeUnit.SECONDS);
+			}
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			p.destroyForcibly();
 		}
 	}
 }

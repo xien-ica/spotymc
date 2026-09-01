@@ -5,6 +5,7 @@ import xien.jxsh.spotymc.PlaybackPoller;
 import xien.jxsh.spotymc.Spotymc;
 import xien.jxsh.spotymc.audio.LibrespotInstaller;
 import xien.jxsh.spotymc.config.ModConfig;
+import xien.jxsh.spotymc.gui.render.TextLayout;
 import xien.jxsh.spotymc.hud.LyricsColor;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.AbstractSliderButton;
@@ -57,9 +58,8 @@ public class HudSettingsScreen extends Screen {
 	private static final double FONT_SCALE_STEP = 0.25; // snap points: .75, 1.0, 1.25, 1.5, 1.75, 2.0
 	// Built once per init() from LibrespotInstaller's estimate rather than hardcoded, so it stays
 	// in sync if the estimate constants there ever change.
-	private static String installNoteText() {
-		return "Installs Rust (if not already installed), then builds librespot (~2–5 min). "
-				+ "Needs " + LibrespotInstaller.estimateLabel() + ".";
+	private static String installNoteText() { return "A small, verified file (" + LibrespotInstaller.estimateLabel() + ") will be downloaded "
+			+ "to enable Spotify playback in-game. It usually takes just 10-30 seconds, and no " + "additional setup is required.";
 	}
 	private static final int WIDGET_HEIGHT = 20;
 	private static final int CONTENT_TOP_PADDING = 8;
@@ -79,6 +79,21 @@ public class HudSettingsScreen extends Screen {
 	private Button reauthButton;
 	private Button cancelInstallButton;
 	private Button uninstallLibrespotButton;
+	// --- Install-consent confirmation view -------------------------------------------------
+	// Clicking "Install librespot" doesn't download anything directly -- it swaps this screen's
+	// content over to a short explainer (what's downloaded, that it's checksum-verified against
+	// SpotyMC's own public build, and that no Spotify credentials touch it) with explicit
+	// Install/Cancel buttons, so the actual download only ever starts after the user's read that
+	// and clicked through it on purpose.
+	private boolean showInstallConfirm = false;
+	private Button confirmInstallButton;
+	private Button confirmCancelButton;
+	private List<String> confirmHeadingLines = Collections.emptyList();
+	private int confirmHeadingLocalY = -1;
+	private int confirmHeadingScreenY = -1;
+	private List<String> confirmBodyLines = Collections.emptyList();
+	private int confirmBodyLocalY = -1;
+	private int confirmBodyScreenY = -1;
 	private String statusMessage = "";
 	private boolean reauthenticating = false;
 	private boolean uninstalling = false;
@@ -163,6 +178,16 @@ public class HudSettingsScreen extends Screen {
 
 		ModConfig cfg = ModConfig.get();
 
+		if (showInstallConfirm) {
+			initInstallConfirm(centerX, top, cfg);
+			return;
+		}
+
+		confirmHeadingLines = Collections.emptyList();
+		confirmHeadingLocalY = -1;
+		confirmBodyLines = Collections.emptyList();
+		confirmBodyLocalY = -1;
+
 		int curY = CONTENT_TOP_PADDING; // local coords: 0 = top of the scrollable content
 		boolean lyricsOn = cfg.lyricsEnabled;
 		lyricsToggleButton = Button.builder(
@@ -221,10 +246,11 @@ public class HudSettingsScreen extends Screen {
 			c.save();
 		});
 
-		// --- In-game audio setup: install librespot via `cargo install librespot`. Whether a build
-		// is running lives on LibrespotInstaller, not this screen (see its class doc) -- that's
-		// what lets a second open of this screen mid-build show "Installing..." + Cancel instead of
-		// offering a second Installation button that would kick off a parallel build.
+		// --- In-game audio setup: install librespot by downloading a precompiled, checksum-verified
+		// binary. Whether a download is running lives on LibrespotInstaller, not this screen (see its
+		// class doc) -- that's what lets a second open of this screen mid-download show
+		// "Installing..." + Cancel instead of offering a second button that would kick off a parallel
+		// download.
 		boolean installRunning = LibrespotInstaller.isInstalling();
 		boolean installed = LibrespotInstaller.isInstalled(cfg.librespotPath);
 		Button installLibrespotButton;
@@ -244,7 +270,7 @@ public class HudSettingsScreen extends Screen {
 			curY += 38 + (installNoteLines.size() - 1) * STATUS_LINE_HEIGHT;
 		} else if (!installed) {
 			installLibrespotButton = Button.builder(
-							Component.literal("Install librespot (via Cargo)"), _ -> installLibrespot())
+							Component.literal("Install librespot"), _ -> openInstallConfirm())
 					.bounds(centerX - 130, 0, 260, 20).build();
 			addScrollable(installLibrespotButton, curY);
 			cancelInstallButton = null;
@@ -256,20 +282,15 @@ public class HudSettingsScreen extends Screen {
 			cancelInstallButton = null;
 			installNoteLines = Collections.emptyList();
 			installNoteLocalY = -1;
-			// Only offer to uninstall once we can actually confirm both halves are there: the
-			// librespot binary itself (checked above) and cargo/rust to drive `cargo uninstall`
-			// with, per its own cleanup step.
-			if (LibrespotInstaller.isCargoAvailable()) {
-				uninstallLibrespotButton = Button.builder(
-								Component.literal(uninstalling ? "Uninstalling..." : "Uninstall librespot"),
-								_ -> uninstallLibrespot())
-						.bounds(centerX - 65, 0, 130, 20).build();
-				uninstallLibrespotButton.active = !uninstalling;
-				addScrollable(uninstallLibrespotButton, curY);
-				curY += 26;
-			} else {
-				uninstallLibrespotButton = null;
-			}
+			// Uninstalling is just deleting the downloaded binary now -- no cargo/Rust toolchain
+			// needs to be present to do it, unlike the old `cargo uninstall` flow.
+			uninstallLibrespotButton = Button.builder(
+							Component.literal(uninstalling ? "Uninstalling..." : "Uninstall librespot"),
+							_ -> uninstallLibrespot())
+					.bounds(centerX - 65, 0, 130, 20).build();
+			uninstallLibrespotButton.active = !uninstalling;
+			addScrollable(uninstallLibrespotButton, curY);
+			curY += 26;
 		}
 
 		// --- Auth recovery: full browser relogin, for when the refresh token itself is bad/revoked. ---
@@ -292,7 +313,69 @@ public class HudSettingsScreen extends Screen {
 				.bounds(centerX - 40, top + panelHeight - 30, 80, 20).build());
 	}
 
-	/** Registers a widget as part of the scrollable content at the given content-local Y. */
+	/**
+	 * Lays out the install-consent view in place of the normal settings content: a short heading,
+	 * an explainer of what's about to happen, and explicit Install/Cancel buttons. Reuses this
+	 * screen's existing scroll/panel machinery (addScrollable, applyScroll, the same panel
+	 * background) rather than a separate popup class, so it behaves consistently on small windows
+	 * / high GUI Scale exactly like every other view here.
+	 */
+	private void initInstallConfirm(int centerX, int top, ModConfig cfg) {
+		// Clear layout state that's only meaningful in the normal settings view, so a stale value
+		// from before this view was entered can't make applyScroll() draw leftover content.
+		installNoteLines = Collections.emptyList();
+		installNoteLocalY = -1;
+		titlePinnedNoteLines = Collections.emptyList();
+		titlePinnedNoteLocalY = -1;
+		cancelInstallButton = null;
+		uninstallLibrespotButton = null;
+		statusMessage = "";
+
+		int curY = CONTENT_TOP_PADDING;
+
+		confirmHeadingLines = wrapText("Install librespot?", PANEL_WIDTH - 40, 1);
+		confirmHeadingLocalY = curY;
+		curY += confirmHeadingLines.size() * STATUS_LINE_HEIGHT + 10;
+
+		String body = "This downloads a small (~20 MB) file to let Minecraft play Spotify. " +
+				"The file is checked to make sure it's safe. " + "After that, open Spotify and choose \"" +
+				cfg.librespotDeviceName + "\" as your playback device.";
+		confirmBodyLines = wrapText(body, PANEL_WIDTH - 40, 8);
+		confirmBodyLocalY = curY;
+		curY += confirmBodyLines.size() * STATUS_LINE_HEIGHT + 16;
+
+		confirmInstallButton = Button.builder(Component.literal("Install librespot"), _ -> confirmInstall())
+				.bounds(centerX - 130, 0, 120, 20).build();
+		addScrollable(confirmInstallButton, curY);
+		confirmCancelButton = Button.builder(Component.literal("Cancel"), _ -> cancelInstallConfirm())
+				.bounds(centerX + 10, 0, 120, 20).build();
+		addScrollable(confirmCancelButton, curY);
+		curY += 26;
+
+		statusLocalY = curY + 10;
+		contentHeight = statusLocalY + STATUS_MAX_LINES * STATUS_LINE_HEIGHT + CONTENT_BOTTOM_PADDING;
+
+		int maxScroll = Math.max(0, contentHeight - viewportHeight);
+		scrollOffset = Math.clamp(scrollOffset, 0, maxScroll);
+		applyScroll();
+
+		addRenderableWidget(Button.builder(Component.literal("← Back"), _ -> cancelInstallConfirm())
+				.bounds(centerX - 40, top + panelHeight - 30, 80, 20).build());
+	}
+
+	/** User clicked through the consent screen -- actually start the download now. */
+	private void confirmInstall() {
+		showInstallConfirm = false;
+		installLibrespot();
+	}
+
+	/** User backed out of the consent screen without installing anything. */
+	private void cancelInstallConfirm() {
+		showInstallConfirm = false;
+		init(width, height);
+	}
+
+
 	private void addScrollable(AbstractWidget widget, int localY) {
 		addRenderableWidget(widget);
 		scrollWidgets.add(new ScrollEntry(widget, localY));
@@ -330,6 +413,22 @@ public class HudSettingsScreen extends Screen {
 			titlePinnedNoteScreenY = (screenY >= viewportTop && screenY + blockHeight <= viewportBottom) ? screenY : -1;
 		} else {
 			titlePinnedNoteScreenY = -1;
+		}
+
+		if (confirmHeadingLocalY >= 0) {
+			int screenY = viewportTop + confirmHeadingLocalY - scrollOffset;
+			int blockHeight = confirmHeadingLines.size() * STATUS_LINE_HEIGHT;
+			confirmHeadingScreenY = (screenY >= viewportTop && screenY + blockHeight <= viewportBottom) ? screenY : -1;
+		} else {
+			confirmHeadingScreenY = -1;
+		}
+
+		if (confirmBodyLocalY >= 0) {
+			int screenY = viewportTop + confirmBodyLocalY - scrollOffset;
+			int blockHeight = confirmBodyLines.size() * STATUS_LINE_HEIGHT;
+			confirmBodyScreenY = (screenY >= viewportTop && screenY + blockHeight <= viewportBottom) ? screenY : -1;
+		} else {
+			confirmBodyScreenY = -1;
 		}
 
 		if (!statusMessage.isEmpty()) {
@@ -536,6 +635,14 @@ public class HudSettingsScreen extends Screen {
 		}
 	}
 
+	/** Switches this screen into the install-consent view (see initInstallConfirm) instead of
+	 *  starting the download immediately -- installLibrespot() itself is now only reachable
+	 *  after the user's clicked through that. */
+	private void openInstallConfirm() {
+		showInstallConfirm = true;
+		init(width, height);
+	}
+
 	/**
 	 * Kicks off the shared install (see LibrespotInstaller's class doc for why the build itself
 	 * lives there and not on this screen) and attaches this screen's own listeners to it. If a
@@ -551,9 +658,9 @@ public class HudSettingsScreen extends Screen {
 		init(width, height);
 	}
 
-	/** Stops the in-progress build (or the bundled rustup installer step) dead rather than letting
-	 *  it finish -- the completion listener still fires with a "canceled" result, which handles
-	 *  the status message and rebuilding the layout the same way a failed install would. */
+	/** Stops the in-progress download dead rather than letting it finish -- the completion listener
+	 *  still fires with a "canceled" result, which handles the status message and rebuilding the
+	 *  layout the same way a failed install would. */
 	private void cancelInstall() {
 		if (cancelInstallButton != null) cancelInstallButton.active = false;
 		LibrespotInstaller.cancelInstall();
@@ -579,13 +686,13 @@ public class HudSettingsScreen extends Screen {
 	}
 
 	/**
-	 * Removes the installed librespot binary via `cargo uninstall` (falling back to deleting it
-	 * directly). First stops any running librespot process and disables it in config -- otherwise
-	 * a live process is still holding the binary open, which fails to delete outright on Windows
-	 * and is a bad idea to uninstall out from under regardless of platform. Runs on this screen's
-	 * own bgExecutor rather than LibrespotInstaller's singleton one -- unlike a multi-minute build,
-	 * there's nothing worth resuming if the screen closes mid-uninstall, so it doesn't need the
-	 * same cross-screen tracking.
+	 * Removes the installed librespot binary by deleting it directly (there's no cargo/Rust
+	 * toolchain involved anymore, so no package-manager uninstall step to run). First stops any
+	 * running librespot process and disables it in config -- otherwise a live process is still
+	 * holding the binary open, which fails to delete outright on Windows and is a bad idea to
+	 * uninstall out from under regardless of platform. Runs on this screen's own bgExecutor rather
+	 * than LibrespotInstaller's singleton one -- unlike a multi-minute build, there's nothing worth
+	 * resuming if the screen closes mid-uninstall, so it doesn't need the same cross-screen tracking.
 	 */
 	private void uninstallLibrespot() {
 		if (uninstalling) return;
@@ -680,6 +787,24 @@ public class HudSettingsScreen extends Screen {
 			}
 		}
 
+		if (confirmHeadingScreenY >= 0) {
+			int noteY = confirmHeadingScreenY;
+			for (String line : confirmHeadingLines) {
+				int lineWidth = this.font.width(line);
+				graphics.text(this.font, line, width / 2 - lineWidth / 2, noteY, 0xFFFFFFFF, true);
+				noteY += STATUS_LINE_HEIGHT;
+			}
+		}
+
+		if (confirmBodyScreenY >= 0) {
+			int noteY = confirmBodyScreenY;
+			for (String line : confirmBodyLines) {
+				int lineWidth = this.font.width(line);
+				graphics.text(this.font, line, width / 2 - lineWidth / 2, noteY, 0xFFAAAAAA, false);
+				noteY += STATUS_LINE_HEIGHT;
+			}
+		}
+
 		if (statusScreenY >= 0) {
 			int color;
 			if (statusMessage.startsWith("Re-auth failed") || statusMessage.startsWith("Install failed")) {
@@ -687,7 +812,7 @@ public class HudSettingsScreen extends Screen {
 			} else if (statusMessage.contains("installed") || statusMessage.contains("Re-connected")) {
 				color = 0xFF55FF55; // green
 			} else {
-				color = 0xFFAAAAAA; // neutral -- e.g. a live cargo build-progress line
+				color = 0xFFAAAAAA; // neutral -- e.g. a live download-progress line
 			}
 			List<String> lines = wrapText(statusMessage, PANEL_WIDTH - 20, STATUS_MAX_LINES);
 			int statusY = statusScreenY;
@@ -737,20 +862,11 @@ public class HudSettingsScreen extends Screen {
 		return lines;
 	}
 
-	/** Trims text to fit a pixel width (rather than a fixed char count), matching PlayerControlScreen's helper. */
+	/** Trims text to fit a pixel width (rather than a fixed char count). Delegates to the same
+	 *  (binary-search-optimized) implementation the render package's panels use, instead of keeping
+	 *  a second, slower copy of the same algorithm in sync by hand. */
 	private String fitText(String s, int maxWidthPx) {
-		if (this.font.width(s) <= maxWidthPx) return s;
-		String ellipsis = "...";
-		int ellipsisW = this.font.width(ellipsis);
-		StringBuilder sb = new StringBuilder();
-		for (int i = 0; i < s.length(); i++) {
-			sb.append(s.charAt(i));
-			if (this.font.width(sb.toString()) + ellipsisW > maxWidthPx) {
-				sb.setLength(Math.max(0, sb.length() - 1));
-				break;
-			}
-		}
-		return sb + ellipsis;
+		return TextLayout.fitText(this.font, s, maxWidthPx);
 	}
 
 	@Override

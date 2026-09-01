@@ -40,6 +40,15 @@ public final class BrowseController {
 
 	private int scrollOffset = 0;
 
+	// Cache for buildEntries() -- see the javadoc there for why.
+	private List<RowEntry> cachedEntries = List.of();
+	private Mode cachedEntriesMode;
+	private boolean cachedEntriesViewingLikedSongs;
+	private List<PlaybackState.Track> cachedEntriesSearchTracks;
+	private List<PlaybackState.Playlist> cachedEntriesSearchPlaylists;
+	private List<PlaybackState.Track> cachedEntriesLikedSongs;
+	private List<PlaybackState.Playlist> cachedEntriesMyPlaylists;
+
 	public BrowseController(PlaybackPoller poller, ExecutorService bgExecutor) {
 		this.poller = poller;
 		this.bgExecutor = bgExecutor;
@@ -173,9 +182,39 @@ public final class BrowseController {
 		return searchTrackResults != null || searchPlaylistResults != null;
 	}
 
-	/** Builds the row list for whichever tab/drill-down is currently active. */
+	/**
+	 * Builds the row list for whichever tab/drill-down is currently active.
+	 * <p>
+	 * Called once per render frame by {@code LeftPanelRenderer}, but the underlying search/library
+	 * data only ever changes on a search completing, a library load completing, a mode switch, or
+	 * entering/leaving the Liked-Songs drill-down -- all of which wholesale-replace the relevant
+	 * field(s) rather than mutating them in place. So rather than re-running the label string
+	 * concatenation for every row on every single frame, this only rebuilds when one of those
+	 * inputs has actually changed (by reference) since the last call.
+	 */
 	public List<RowEntry> buildEntries() {
-		return mode == Mode.LIBRARY ? buildLibraryEntries() : buildSearchEntries();
+		List<PlaybackState.Track> st = searchTrackResults;
+		List<PlaybackState.Playlist> sp = searchPlaylistResults;
+		List<PlaybackState.Track> ls = likedSongs;
+		List<PlaybackState.Playlist> mp = myPlaylists;
+		boolean vls = viewingLikedSongs;
+
+		if (mode == cachedEntriesMode && vls == cachedEntriesViewingLikedSongs
+				&& st == cachedEntriesSearchTracks && sp == cachedEntriesSearchPlaylists
+				&& ls == cachedEntriesLikedSongs && mp == cachedEntriesMyPlaylists) {
+			return cachedEntries;
+		}
+
+		List<RowEntry> entries = mode == Mode.LIBRARY ? buildLibraryEntries() : buildSearchEntries();
+
+		cachedEntries = entries;
+		cachedEntriesMode = mode;
+		cachedEntriesViewingLikedSongs = vls;
+		cachedEntriesSearchTracks = st;
+		cachedEntriesSearchPlaylists = sp;
+		cachedEntriesLikedSongs = ls;
+		cachedEntriesMyPlaylists = mp;
+		return entries;
 	}
 
 	private List<RowEntry> buildSearchEntries() {

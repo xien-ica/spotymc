@@ -15,15 +15,22 @@ public final class TextLayout {
 		if (font.width(s) <= maxWidthPx) return s;
 		String ellipsis = "...";
 		int ellipsisW = font.width(ellipsis);
-		StringBuilder sb = new StringBuilder();
-		for (int i = 0; i < s.length(); i++) {
-			sb.append(s.charAt(i));
-			if (font.width(sb.toString()) + ellipsisW > maxWidthPx) {
-				sb.setLength(Math.max(0, sb.length() - 1));
-				break;
+		int budget = maxWidthPx - ellipsisW;
+		if (budget <= 0) return ellipsis;
+
+		// Longest prefix whose width fits under budget. Width only grows as the prefix grows, so
+		// binary-searching the cut point is exact (same result the old one-char-at-a-time scan
+		// produced) but needs O(log n) width measurements instead of O(n).
+		int lo = 0, hi = s.length();
+		while (lo < hi) {
+			int mid = (lo + hi + 1) >>> 1;
+			if (font.width(s.substring(0, mid)) <= budget) {
+				lo = mid;
+			} else {
+				hi = mid - 1;
 			}
 		}
-		return sb + ellipsis;
+		return s.substring(0, lo) + ellipsis;
 	}
 
 	/** Wraps text onto as many lines as needed (breaking on spaces) so it fits a pixel width. */

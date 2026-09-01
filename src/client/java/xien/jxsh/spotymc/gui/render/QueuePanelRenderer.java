@@ -8,7 +8,6 @@ import xien.jxsh.spotymc.gui.layout.PanelLayout;
 import xien.jxsh.spotymc.gui.model.ClickableRowHit;
 import xien.jxsh.spotymc.gui.model.RowKind;
 
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -32,15 +31,20 @@ public final class QueuePanelRenderer {
 		}
 	}
 
+	/**
+	 * {@code hits} is the caller's own reusable list (e.g. a screen field): this clears and refills
+	 * it in place rather than handing back a brand-new list every frame for the caller to copy out of.
+	 */
 	public static RenderResult render(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY,
-	                                  PanelLayout layout, PlaybackPoller poller, int scrollOffset, HoverTracker hoverTracker) {
-		List<ClickableRowHit> hits = new ArrayList<>();
+	                                  PanelLayout layout, PlaybackPoller poller, int scrollOffset, HoverTracker hoverTracker,
+	                                  List<ClickableRowHit> hits) {
+		hits.clear();
 		graphics.text(font, "QUEUE", layout.listRightX, layout.panelTop + 8, Theme.ACCENT, false);
 
 		List<PlaybackState.QueueItem> queue = poller.getQueue();
 		if (queue.isEmpty()) {
 			graphics.text(font, "Queue is empty", layout.listRightX, layout.rightListY, Theme.TEXT_DIM, false);
-			hoverTracker.update(null, System.currentTimeMillis());
+			hoverTracker.update(-1, System.currentTimeMillis());
 			return RenderResult.hitsOnly(hits, 0);
 		}
 
@@ -68,7 +72,7 @@ public final class QueuePanelRenderer {
 			}
 		}
 		long now = System.currentTimeMillis();
-		long hoverElapsedMs = hoverTracker.update(hoveredQueueIndex >= 0 ? hoveredQueueIndex : null, now);
+		long hoverElapsedMs = hoverTracker.update(hoveredQueueIndex, now);
 
 		// Clip strictly to the list's content area -- and to the *narrowed* labelBudget (not
 		// fullLabelBudget) when a scrollbar is showing, so a marquee-scrolling row can never paint

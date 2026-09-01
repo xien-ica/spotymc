@@ -10,6 +10,14 @@ import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.Font;
 import net.minecraft.world.level.GameType;
 
+/**
+ * Draws the now-playing title/artist and current lyric line above the hotbar.
+ * <p>
+ * Called every frame the HUD is enabled. The steady-state path (nothing changing) is kept
+ * allocation-free: color and title string are cached until their inputs actually change,
+ * geometry is pure arithmetic, and the only work that remains is the unavoidable
+ * font.width / graphics.text calls.
+ */
 public class LyricsHud {
     // Vanilla's own hotbar decorations, which our lines need to clear on top of the user's
     // configurable gap -- otherwise the gap sliders mean different actual distances depending on
@@ -34,7 +42,18 @@ public class LyricsHud {
     // it, so the title gets its own smaller value here.
     private static final int CREATIVE_TITLE_POPUP_CLEARANCE = 4;
 
+    // Placeholder used when the track has no synced lyrics. Constant so we never allocate it.
+    private static final String NO_LYRICS_PLACEHOLDER = "♫ no synced lyrics found";
+    private static final int NO_LYRICS_COLOR = 0xFFFFD966;
+
     private final PlaybackPoller poller;
+
+    // --- per-frame caches (invalidate only when the underlying data actually changes) ---------
+    private String cachedColorName = null;
+    private int cachedLyricArgb = 0xFFFFFFFF;
+
+    private String cachedTrackId = null;
+    private String cachedTitleLine = null;
 
     public LyricsHud(PlaybackPoller poller) {
         this.poller = poller;
@@ -59,7 +78,18 @@ public class LyricsHud {
         int lyricY = hotbarTop - vanillaReserve - cfg.effectiveLyricsHudGap(survivalHud) - 10;
 
         if (showTitle) {
-            String titleLine = playback.title + "  —  " + playback.artists; // em dash separator
+            // Rebuild the title string only when the track (or its metadata) changes.
+            if (!playback.trackId.equals(cachedTrackId)
+                    || cachedTitleLine == null
+                    || !cachedTitleLine.startsWith(playback.title)) {
+                // Cheap invalidation: trackId is the authoritative key; the startsWith guard
+                // also catches the rare case where the same trackId is re-used with updated
+                // title/artists (e.g. after a metadata refresh).
+                cachedTrackId = playback.trackId;
+                cachedTitleLine = playback.title + "  —  " + playback.artists;
+            }
+            String titleLine = cachedTitleLine;
+
             if (survivalHud) {
                 drawScaledCentered(graphics, client.font, titleLine, screenWidth / 2, SURVIVAL_TITLE_TOP_MARGIN,
                         0xFFFFFFFF, SURVIVAL_TITLE_FONT_SCALE);
@@ -72,12 +102,25 @@ public class LyricsHud {
         if (showLyrics) {
             LyricLine line = poller.getCurrentLyricLine();
             boolean hasLine = line != null;
-            String lyricText = hasLine ? line.text() : (poller.hasLyricsForCurrentTrack() ? "" : "♫ no synced lyrics found");
+            String lyricText = hasLine ? line.text() : (poller.hasLyricsForCurrentTrack() ? "" : NO_LYRICS_PLACEHOLDER);
             if (!lyricText.isEmpty()) {
                 // Only wrap real lyric lines in notes -- not the "no synced lyrics found" placeholder,
                 // which already carries its own note glyph.
                 String displayText = hasLine ? LyricsFormat.display(lyricText, cfg.lyricsNotesEnabled) : lyricText;
-                int color = hasLine ? LyricsColor.byName(cfg.lyricsColorName).argb() : 0xFFFFD966;
+
+                // Resolve color only when the config name actually changes.
+                int color;
+                if (hasLine) {
+                    String colorName = cfg.lyricsColorName;
+                    if (!colorName.equals(cachedColorName)) {
+                        cachedColorName = colorName;
+                        cachedLyricArgb = LyricsColor.byName(colorName).argb();
+                    }
+                    color = cachedLyricArgb;
+                } else {
+                    color = NO_LYRICS_COLOR;
+                }
+
                 drawScaledCentered(graphics, client.font, displayText, screenWidth / 2, lyricY, color, cfg.lyricsFontScale);
             }
         }

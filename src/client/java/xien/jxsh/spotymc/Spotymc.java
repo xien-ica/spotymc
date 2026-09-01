@@ -16,6 +16,14 @@ import net.minecraft.resources.Identifier;
 import com.mojang.blaze3d.platform.InputConstants;
 import org.lwjgl.glfw.GLFW;
 
+/**
+ * Client entry point. Registers the F12 overlay key, global Right-Ctrl+arrow hotkeys,
+ * lifecycle hooks for the poller, and the lyrics HUD element.
+ * <p>
+ * The per-tick work ({@link #handleGlobalHotkeys}) is deliberately allocation-free and
+ * runs at only 20 TPS, so the focus is on correct edge detection and not fighting text fields
+ * rather than micro-optimising arithmetic.
+ */
 public class Spotymc implements ClientModInitializer {
     private static final String MOD_ID = "spotymc";
     public static final int TOGGLE_KEYCODE = GLFW.GLFW_KEY_F12;
@@ -30,20 +38,27 @@ public class Spotymc implements ClientModInitializer {
     // --- Global Right Ctrl + Arrow hotkeys (prev/next track, volume +-5%) ---
     // Each physical key gets its own KeyMapping so KeyMapping#isDown can be polled every tick --
     // vanilla KeyMapping only tracks a single physical key, so the "Right Ctrl held" state and
-    // each arrow key are tracked as separate mappings and combined by hand, rather than trying
-    // to express the combo as one binding.
+    // each arrow key are tracked as separate mappings and combined by hand.
     private KeyMapping rightCtrlKey;
     private KeyMapping prevTrackArrowKey;
     private KeyMapping nextTrackArrowKey;
     private KeyMapping volumeUpArrowKey;
     private KeyMapping volumeDownArrowKey;
 
-    // Tracks whether each combo was already down last tick, so a held combo fires its action
-    // once on press instead of repeating every tick it's held.
+    // Edge-detection flags: a held combo fires once on press (prev/next) or with key-repeat
+    // behaviour (volume).
     private boolean prevTrackComboDown = false;
     private boolean nextTrackComboDown = false;
     private boolean volumeUpComboDown = false;
     private boolean volumeDownComboDown = false;
+
+    // Volume key-repeat: fire immediately on press, then every REPEAT_INTERVAL_TICKS after
+    // REPEAT_INITIAL_DELAY_TICKS. Counts ticks since the combo was last pressed so the interval
+    // stays constant instead of drifting.
+    private int volumeUpHeldTicks = 0;
+    private int volumeDownHeldTicks = 0;
+    private static final int REPEAT_INITIAL_DELAY_TICKS = 10; // 500 ms at 20 TPS
+    private static final int REPEAT_INTERVAL_TICKS = 3;       // 150 ms between repeats once ramped up
 
     @Override
     public void onInitializeClient() {
@@ -56,9 +71,6 @@ public class Spotymc implements ClientModInitializer {
                 CATEGORY
         ));
 
-        // The modifier and each arrow get registered as ordinary (rebindable) key mappings --
-        // only the combination of "Right Ctrl down" + "an arrow just pressed" actually triggers
-        // an action, handled in handleGlobalHotkeys() below.
         rightCtrlKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
                 "key.spotymc.modifier", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_RIGHT_CONTROL, CATEGORY));
         prevTrackArrowKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
@@ -73,16 +85,14 @@ public class Spotymc implements ClientModInitializer {
         ClientLifecycleEvents.CLIENT_STARTED.register(_ -> poller.start());
         ClientLifecycleEvents.CLIENT_STOPPING.register(_ -> poller.stop());
 
-        // "Save and Quit to Title" (and disconnecting from a server) doesn't stop librespot on
-        // its own -- it just keeps streaming into a title screen no one's listening to. Track
-        // world membership explicitly so maintainAudio() knows to actually tear it down instead
-        // of only tearing it down when the whole game closes.
+        // Track world membership so maintainAudio() can tear librespot down on "Save and Quit
+        // to Title" instead of leaving it streaming into an empty title screen.
         ClientPlayConnectionEvents.JOIN.register((_, _, _) -> poller.setInWorld(true));
         ClientPlayConnectionEvents.DISCONNECT.register((_, _) -> poller.setInWorld(false));
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            // Only ever needs to handle opening -- consumeClick() simply won't fire while a screen
-            // is already showing, so closing is handled directly in the screens' keyPressed instead.
+            // Only ever needs to handle opening -- consumeClick() simply won't fire while a
+            // screen is already showing, so closing is handled directly in the screens' keyPressed.
             while (openControlsKey.consumeClick()) {
                 if (client.gui.screen() == null) {
                     client.gui.setScreen(new PlayerControlScreen(poller));
@@ -94,47 +104,72 @@ public class Spotymc implements ClientModInitializer {
         HudElementRegistry.attachElementBefore(VanillaHudElements.CHAT,
                 Identifier.fromNamespaceAndPath(MOD_ID, "lyrics_hud"),
                 (graphics, _) -> {
-                    Minecraft client = Minecraft.getInstance();
-                    if (client.gui.screen() == null) {
-                        hud.render(graphics, client);
+                    // Skip the entire HUD path while any screen is open (F12 overlay, inventory,
+                    // chat, etc.) -- the lyrics are meant for the in-world view only.
+                    if (Minecraft.getInstance().gui.screen() == null) {
+                        hud.render(graphics, Minecraft.getInstance());
                     }
                 });
     }
 
     /**
-     * Polls the Right Ctrl + arrow-key combos every tick via their KeyMapping#isDown() states:
-     * Right Ctrl + Left/Right = previous/next track, Right Ctrl + Up/Down = volume +-5%.
-     * Skipped entirely while a text field (search box, chat, sign editor, etc.) has focus, so
-     * this doesn't fight the Ctrl+Left/Right word-jump vanilla's EditBox already does with
-     * either Ctrl key. Runs regardless of whether the F12 screen is open or the player is just
-     * in the world, so the hotkeys work anywhere.
+     * Polls the Right Ctrl + arrow-key combos every tick.
+     * Skipped entirely while a text field has focus so we don't fight Ctrl+Left/Right word-jump
+     * in EditBoxes. Runs whether or not the F12 screen is open.
      */
     private void handleGlobalHotkeys(Minecraft client) {
         if (isTypingInTextField(client)) {
+            // Reset edge state so a combo held while typing doesn't fire the moment focus leaves.
             prevTrackComboDown = false;
             nextTrackComboDown = false;
             volumeUpComboDown = false;
             volumeDownComboDown = false;
+            volumeUpHeldTicks = 0;
+            volumeDownHeldTicks = 0;
             return;
         }
 
         boolean rightCtrl = rightCtrlKey.isDown();
 
         boolean prevTrackCombo = rightCtrl && prevTrackArrowKey.isDown();
-        if (prevTrackCombo && !prevTrackComboDown) poller.previousTrack();
+        if (prevTrackCombo && !prevTrackComboDown) {
+            poller.previousTrack();
+        }
         prevTrackComboDown = prevTrackCombo;
 
         boolean nextTrackCombo = rightCtrl && nextTrackArrowKey.isDown();
-        if (nextTrackCombo && !nextTrackComboDown) poller.nextTrack();
+        if (nextTrackCombo && !nextTrackComboDown) {
+            poller.nextTrack();
+        }
         nextTrackComboDown = nextTrackCombo;
 
         boolean volumeUpCombo = rightCtrl && volumeUpArrowKey.isDown();
-        if (volumeUpCombo && !volumeUpComboDown) poller.adjustVolume(5);
+        volumeUpHeldTicks = tickVolumeRepeat(volumeUpCombo, volumeUpComboDown, volumeUpHeldTicks, +5);
         volumeUpComboDown = volumeUpCombo;
 
         boolean volumeDownCombo = rightCtrl && volumeDownArrowKey.isDown();
-        if (volumeDownCombo && !volumeDownComboDown) poller.adjustVolume(-5);
+        volumeDownHeldTicks = tickVolumeRepeat(volumeDownCombo, volumeDownComboDown, volumeDownHeldTicks, -5);
         volumeDownComboDown = volumeDownCombo;
+    }
+
+    /**
+     * Advances one combo's held-tick counter and fires {@code poller.adjustVolume} on the
+     * appropriate ticks to produce key-repeat behaviour.
+     * @return the updated held-tick count for the caller to store back
+     */
+    private int tickVolumeRepeat(boolean comboDown, boolean wasComboDown, int heldTicks, int deltaPercent) {
+        if (!comboDown) return 0;
+        if (!wasComboDown) {
+            // Rising edge -- fire once immediately.
+            poller.adjustVolume(deltaPercent);
+            return 0;
+        }
+        heldTicks++;
+        if (heldTicks >= REPEAT_INITIAL_DELAY_TICKS
+                && (heldTicks - REPEAT_INITIAL_DELAY_TICKS) % REPEAT_INTERVAL_TICKS == 0) {
+            poller.adjustVolume(deltaPercent);
+        }
+        return heldTicks;
     }
 
     /** True while a text-entry widget (search box, chat, sign, anvil name field, etc.) has focus. */

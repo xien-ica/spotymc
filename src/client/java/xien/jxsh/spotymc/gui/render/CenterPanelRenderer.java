@@ -7,6 +7,8 @@ import xien.jxsh.spotymc.api.PlaybackState;
 import xien.jxsh.spotymc.config.ModConfig;
 import xien.jxsh.spotymc.gui.layout.PanelLayout;
 
+import java.util.List;
+
 /** Draws the center panel's now-playing text, progress bar, and in-game audio status line(s). */
 public final class CenterPanelRenderer {
 
@@ -15,6 +17,13 @@ public final class CenterPanelRenderer {
 	/** Tracks the last now-playing string so the auto-marquee can reset when the track changes. */
 	private static String lastTitle = "";
 	private static long titleMarqueeStartMs;
+
+	// Audio-status text is usually unchanged from one frame to the next (it only flips on real
+	// state transitions), so cache its word-wrap result keyed on the text + wrap width rather than
+	// re-wrapping it every single frame.
+	private static String lastAudioStatus = null;
+	private static int lastAudioStatusMaxW = -1;
+	private static List<String> cachedAudioStatusLines = List.of();
 
 	private CenterPanelRenderer() {}
 
@@ -34,7 +43,7 @@ public final class CenterPanelRenderer {
 	}
 
 	public static ProgressBarBounds render(GuiGraphicsExtractor graphics, Font font, PanelLayout layout,
-			PlaybackPoller poller, int mouseX, int mouseY, boolean draggingProgress, int dragPreviewProgressMs) {
+	                                       PlaybackPoller poller, int mouseX, int mouseY, boolean draggingProgress, int dragPreviewProgressMs) {
 		PlaybackState state = poller.getState();
 
 		String nowPlaying = state.trackId != null ? state.title + " — " + state.artists : "Nothing playing";
@@ -116,8 +125,14 @@ public final class CenterPanelRenderer {
 			audioStatus = "⚠ Select \"" + cfg.librespotDeviceName + "\" in your Spotify app";
 			color = 0xFFFFD966;
 		}
+		int wrapW = layout.centerW - 16;
+		if (!audioStatus.equals(lastAudioStatus) || wrapW != lastAudioStatusMaxW) {
+			lastAudioStatus = audioStatus;
+			lastAudioStatusMaxW = wrapW;
+			cachedAudioStatusLines = TextLayout.wrapText(font, audioStatus, wrapW);
+		}
 		int y = layout.audioStatusY;
-		for (String line : TextLayout.wrapText(font, audioStatus, layout.centerW - 16)) {
+		for (String line : cachedAudioStatusLines) {
 			DrawUtil.drawCentered(graphics, font, line, layout.centerMidX, y, color);
 			y += layout.audioStatusLineH;
 		}

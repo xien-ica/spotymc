@@ -19,13 +19,22 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Owns the shared, thread-safe view of "what's currently playing" that the
- * HUD and the F12 GUI both read from. Polls Spotify every 2s (well within
+ * HUD and the F12 GUI both read from. Polls Spotify every 2 s (well within
  * rate limits) and re-resolves lyrics only when the track actually changes.
  * <p>
  * Also owns the optional librespot subprocess that provides actual in-game
- * audio (see xien.jxsh.spotymc.audio). That process is launched/kept alive
- * from the same poll loop, with a 10s backoff on failure so a missing/bad
- * librespotPath doesn't spam retries every 2 seconds.
+ * audio. That process is launched/kept alive from the same poll loop, with a
+ * 10 s backoff on failure so a missing/bad librespotPath doesn't spam retries.
+ * <p>
+ * Design notes for the hot paths:
+ * <ul>
+ *   <li>All cross-thread state lives in {@link AtomicReference}s — lock-free reads from
+ *       the render thread and the client tick.</li>
+ *   <li>Lyrics + queue side-fetches run on a dedicated {@code ioPool} so they never
+ *       serialise behind each other or behind {@code maintainAudio()}.</li>
+ *   <li>{@link #getCurrentLyricLine()} uses the binary-search implementation in
+ *       {@link LyricsService#currentLine}, keeping the per-frame cost O(log n).</li>
+ * </ul>
  */
 public class PlaybackPoller {
 	public final SpotifyAuth auth = new SpotifyAuth();
@@ -45,16 +54,19 @@ public class PlaybackPoller {
 	private volatile long audioNextRetryAtMillis = 0L;
 	private volatile long audioStartedAtMillis = 0L;
 	private static final long AUDIO_START_GRACE_MS = 3000L;
-	// Whether the player is actually in a world right now (vs. the title screen, a server
-	// list, etc.) -- librespot has no concept of this on its own, so without tracking it
-	// explicitly, "Save and Quit to Title" would just leave it streaming into nothing.
+	// Whether the player is actually in a world right now (vs. the title screen).
 	// Starts false: the poller itself starts at client launch, before any world is joined.
 	private volatile boolean inWorld = false;
 
 	private ScheduledExecutorService executor;
-	// Lyrics + queue side-fetches run here, off the poll loop's own thread, so they don't
-	// serialize behind each other (or behind maintainAudio()) and stack up per-cycle latency.
+	// Lyrics + queue side-fetches run here so they don't serialise behind the poll loop
+	// or behind maintainAudio().
 	private ExecutorService ioPool;
+
+	// Cached linear gain derived from ModConfig#librespotOutputCapDb. Recomputed only
+	// when the config value actually changes, avoiding a Math.pow every poll tick.
+	private float lastCapDb = Float.NaN;
+	private float lastGain = 1.0f;
 
 	public void start() {
 		executor = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -77,22 +89,18 @@ public class PlaybackPoller {
 	}
 
 	/**
-	 * Tells the poller whether the player is currently in a world (true right after
-	 * ClientPlayConnectionEvents. JOIN, false after DISCONNECT -- e.g. "Save and Quit to Title",
-	 * a disconnect/kick, or a server switch). maintainAudio() uses this to actually tear down
-	 * librespot at the title screen instead of leaving it running with no one listening, and to
-	 * let it come back on its own the next time a world is joined.
+	 * Tells the poller whether the player is currently in a world.
+	 * maintainAudio() uses this to tear librespot down at the title screen and bring
+	 * it back automatically on the next JOIN.
 	 */
 	public void setInWorld(boolean inWorld) {
 		this.inWorld = inWorld;
 	}
 
 	/**
-	 * Forces an extra playback-state refresh outside the normal 2s cadence. Call this right
-	 * after a user-initiated action (play/pause/skip/queue click) so the UI catches up quickly
-	 * instead of waiting for the next scheduled tick. Staggered rather than a single immediate
-	 * call because Spotify's own API needs a moment to register the change on their end -- an
-	 * instant poll would often just re-read the stale state.
+	 * Forces extra playback-state refreshes outside the normal 2 s cadence.
+	 * Staggered because Spotify needs a moment to register the change; an instant poll
+	 * would often just re-read the stale state.
 	 */
 	public void pollSoonBurst() {
 		if (executor == null || executor.isShutdown()) return;
@@ -102,10 +110,8 @@ public class PlaybackPoller {
 	}
 
 	/**
-	 * Immediately drops the first {@code count} tracks from the displayed queue, ahead of the
-	 * next real poll. Used when the user clicks a queue row to skip straight to it -- skipping
-	 * past N tracks should remove all N from view, not just the one that was clicked, since
-	 * skipToQueueIndex() advances past all of them too.
+	 * Immediately drops the first {@code count} tracks from the displayed queue.
+	 * Used when the user clicks a queue row so the UI updates before the next real poll.
 	 */
 	public void optimisticAdvanceQueue(int count) {
 		queue.updateAndGet(list -> {
@@ -115,35 +121,30 @@ public class PlaybackPoller {
 		});
 	}
 
-	/** Skips to the previous track. Fire-and-forget -- e.g. from the global hotkey. */
+	/** Skips to the previous track. Fire-and-forget (e.g. global hotkey). */
 	public void previousTrack() {
 		runOnIoPool(api::previous);
 	}
 
-	/** Skips to the next track. Fire-and-forget -- e.g. from the global hotkey. */
+	/** Skips to the next track. Fire-and-forget (e.g. global hotkey). */
 	public void nextTrack() {
 		runOnIoPool(api::next);
 	}
 
 	/**
-	 * Nudges Spotify Connect's own volume by {@code deltaPercent} (positive or negative),
-	 * clamped to 0-100 and based on the last polled volume rather than round-tripping to
-	 * Spotify first -- good enough for a hotkey that's typically pressed several times in a
-	 * row, and any drift is corrected by the next regular poll.
+	 * Nudges Spotify Connect volume by {@code deltaPercent}, clamped to 0-100.
+	 * Applies the change optimistically to the shared state first so rapid/held presses
+	 * compound correctly instead of all reading the same stale polled value.
 	 */
 	public void adjustVolume(int deltaPercent) {
-		runOnIoPool(() -> {
-			int current = state.get().volumePercent;
-			int target = Math.clamp(current + deltaPercent, 0, 100);
-			api.setVolume(target);
-		});
+		int target = state.updateAndGet(s -> s.withOptimisticVolume(s.volumePercent + deltaPercent)).volumePercent;
+		runOnIoPool(() -> api.setVolume(target));
 	}
 
 	private interface ThrowingRunnable {
 		void run() throws Exception;
 	}
 
-	/** Runs a one-off API action on the shared io pool, then nudges the poller to resync quickly. */
 	private void runOnIoPool(ThrowingRunnable action) {
 		if (ioPool == null || ioPool.isShutdown()) return;
 		ioPool.execute(() -> {
@@ -165,6 +166,8 @@ public class PlaybackPoller {
 
 			if (newState.trackId != null && !newState.trackId.equals(lastTrackId)) {
 				lastTrackId = newState.trackId;
+				// Side-fetches run on ioPool so they never block the next poll tick
+				// or each other.
 				CompletableFuture.runAsync(() -> {
 					try {
 						List<LyricLine> lines = lyrics.fetch(newState.title, newState.artists, newState.durationMs);
@@ -175,9 +178,6 @@ public class PlaybackPoller {
 				}, ioPool);
 				CompletableFuture.runAsync(() -> {
 					try {
-						// Track advanced -- the song that just started is no longer "up next",
-						// so pull the fresh queue (Spotify's own /queue endpoint already excludes
-						// whatever is currently playing).
 						queue.set(api.getQueue());
 					} catch (Exception e) {
 						queue.set(List.of());
@@ -199,9 +199,6 @@ public class PlaybackPoller {
 
 	private void maintainAudio() {
 		if (!inWorld) {
-			// At the title screen (or between worlds/servers) -- nothing should be listening,
-			// so tear librespot down instead of leaving it streaming into nothing. It'll come
-			// back on its own via the branch below once JOIN flips inWorld back to true.
 			if (librespot != null) stopAudio();
 			return;
 		}
@@ -211,20 +208,20 @@ public class PlaybackPoller {
 			if (librespot != null) stopAudio();
 			return;
 		}
-		// Reasserted every tick, unconditionally -- the early returns just below (audio already
-		// healthy, or cooling down after a failure) would otherwise skip this entirely once
-		// playback is running, leaving the cap applied only once, right at startup.
-		applyOutputCap();
 
+		// Re-assert the output cap every tick so a freshly-started process picks it up
+		// immediately and config changes are applied without a restart.
+		applyOutputCap(cfg);
+
+		long now = System.currentTimeMillis();
 		boolean processAlive = librespot != null && librespot.isRunning();
-		boolean withinStartupGrace = System.currentTimeMillis() - audioStartedAtMillis < AUDIO_START_GRACE_MS;
-		// "Healthy" means the process is alive AND either the line is actually open and playing,
-		// or we only just started it and haven't given it a chance to open the line yet.
-		// Trusting processAlive alone (the old check) hides a dead SourceDataLine forever.
-		if (processAlive && (audioPlayer.isActive() || withinStartupGrace)) return;
-		if (System.currentTimeMillis() < audioNextRetryAtMillis) return; // cooling down after a failure
+		boolean withinStartupGrace = (now - audioStartedAtMillis) < AUDIO_START_GRACE_MS;
 
-		stopAudio(); // clear out whatever half-broken state we're in before retrying
+		// Healthy = process alive AND (line open or still inside the startup grace window).
+		if (processAlive && (audioPlayer.isActive() || withinStartupGrace)) return;
+		if (now < audioNextRetryAtMillis) return; // cooling down after a failure
+
+		stopAudio(); // clear half-broken state before retrying
 		try {
 			if (cfg.librespotPath == null || cfg.librespotPath.isBlank()) {
 				throw new IllegalStateException("librespot isn't installed -- press F12 -> Settings -> Install librespot");
@@ -233,37 +230,28 @@ public class PlaybackPoller {
 					cfg.librespotInitialVolume);
 			librespot.start();
 			audioPlayer.start(librespot.audioStream());
-			audioStartedAtMillis = System.currentTimeMillis();
+			audioStartedAtMillis = now;
 			audioError = null;
 		} catch (Exception e) {
 			audioError = e.getMessage();
-			audioNextRetryAtMillis = System.currentTimeMillis() + 10_000; // back off 10s before retrying
+			audioNextRetryAtMillis = now + 10_000; // 10 s backoff
 		}
 	}
 
 	/**
-	 * Applies a fixed attenuation to libre spot's actual in-game output loudness (ModConfig
-	 * #librespotOutputCapDb, default -8dB) -- independent of Spotify Connect's own volume, which
-	 * still scales the full 0-100% range in F12/the Spotify app as normal. This just quietens
-	 * wherever that lands, so maxing out Connect volume in-game still leaves room to hear
-	 * Minecraft's own sound effects, without touching any of Minecraft's own volume settings.
-	 * Converted from dB to a linear amplitude multiplier via the standard 10^(dB/20) formula --
-	 * a plain percentage cut (e.g. 80% amplitude) is only ~-2dB and barely audible, since loudness
-	 * perception is logarithmic, not linear. Re-applied every poll tick so it's picked up promptly
-	 * if librespot just (re)started.
+	 * Applies the configured dB attenuation to the in-game audio output.
+	 * Gain is recomputed only when the config value changes (avoids Math.pow every poll).
 	 */
-	private float lastLoggedCapDb = Float.NaN;
-
-	private void applyOutputCap() {
-		ModConfig cfg = ModConfig.get();
-		float gain = (float) Math.pow(10.0, cfg.librespotOutputCapDb / 20.0);
-		gain = Math.clamp(gain, 0f, 1f);
-		audioPlayer.setVolume(gain);
-		if (cfg.librespotOutputCapDb != lastLoggedCapDb) {
-			System.out.println("[spotymc] Applying librespot output cap: " + cfg.librespotOutputCapDb
-					+ "dB (linear gain " + String.format("%.2f", gain) + ")");
-			lastLoggedCapDb = cfg.librespotOutputCapDb;
+	private void applyOutputCap(ModConfig cfg) {
+		float db = cfg.librespotOutputCapDb;
+		if (db != lastCapDb) {
+			float gain = (float) Math.pow(10.0, db / 20.0);
+			lastGain = Math.clamp(gain, 0f, 1f);
+			lastCapDb = db;
+			System.out.println("[spotymc] Applying librespot output cap: " + db
+					+ "dB (linear gain " + String.format("%.2f", lastGain) + ")");
 		}
+		audioPlayer.setVolume(lastGain);
 	}
 
 	private void stopAudio() {
@@ -275,21 +263,12 @@ public class PlaybackPoller {
 	}
 
 	/**
-	 * Stops any running librespot process and returns once it's actually down -- for a caller
-	 * (uninstall) that's about to delete the binary and needs it not to still be running out from
-	 * under that delete. On Windows especially, a running exe's file is locked and can't be
-	 * deleted at all while the process holds it open.
-	 * <p>
-	 * Runs the actual stop on this poller's own executor thread, the only thread that's otherwise
-	 * allowed to touch the {@code librespot} field (poll() -> maintainAudio() runs there too) --
-	 * calling stopAudio() directly from another thread (e.g. the render thread) would race that
-	 * loop. Callers should also flip ModConfig#librespotEnabled to false first (and save it)
-	 * so maintainAudio() doesn't just start it back up again on its next tick.
+	 * Stops any running librespot process and returns once it's actually down.
+	 * Required before deleting the binary (especially on Windows where a running exe is locked).
+	 * Runs on the poller's own executor thread to avoid racing maintainAudio().
 	 */
 	public CompletableFuture<Void> stopAudioAndWait() {
 		if (executor == null || executor.isShutdown()) {
-			// No poll loop running (start() never called, or stop() already has) -- nothing else
-			// can be touching the field concurrently, so it's safe to just do it here directly.
 			stopAudio();
 			return CompletableFuture.completedFuture(null);
 		}
@@ -301,7 +280,7 @@ public class PlaybackPoller {
 		return future;
 	}
 
-	/** True once Spotify Connect's active device matches our librespot instance -- i.e. audio should be audible. */
+	/** True once Spotify Connect's active device matches our librespot instance. */
 	public boolean isPlayingThroughMinecraft() {
 		PlaybackState s = state.get();
 		return s.deviceName != null && s.deviceName.equalsIgnoreCase(ModConfig.get().librespotDeviceName);
@@ -321,28 +300,31 @@ public class PlaybackPoller {
 	}
 
 	/**
-	 * Immediately reflects a seek in the shared state, ahead of the next real poll. Used right
-	 * when the user releases a drag on the progress bar, so playback appears to jump instantly
-	 * instead of waiting on the round-trip to Spotify and back.
+	 * Immediately reflects a seek in the shared state so the progress bar jumps instantly
+	 * instead of waiting for the round-trip to Spotify.
 	 */
 	public void optimisticSeek(int positionMs) {
 		state.updateAndGet(s -> s.trackId != null ? s.withOptimisticProgress(positionMs) : s);
 	}
 
-	/** Line to display right now, or null if there's no synced lyric for this instant. */
+	/**
+	 * Line to display right now, or null if there's no synced lyric for this instant.
+	 * Delegates to the binary-search implementation in LyricsService (O(log n)).
+	 */
 	public LyricLine getCurrentLyricLine() {
 		PlaybackState s = state.get();
 		if (s.trackId == null) return null;
-		return LyricsService.currentLine(currentLyrics.get(), s.estimatedProgressMs());
+		List<LyricLine> lines = currentLyrics.get();
+		if (lines.isEmpty()) return null;
+		return LyricsService.currentLine(lines, s.estimatedProgressMs());
 	}
 
 	public boolean hasLyricsForCurrentTrack() {
 		return !currentLyrics.get().isEmpty();
 	}
 
-	/** Upcoming queue (excludes the currently playing track), refreshed each time the track changes. */
+	/** Upcoming queue (excludes the currently playing track). */
 	public List<PlaybackState.QueueItem> getQueue() {
 		return queue.get();
 	}
-
 }

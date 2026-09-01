@@ -1,0 +1,35 @@
+[33mcommit 14ac14134c1222128c9702c8fbd8184af31afb1b[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmaster[m[33m, [m[1;31morigin/master[m[33m)[m
+Author: aatrox <120027707+xien-ica@users.noreply.github.com>
+Date:   Tue Sep 1 11:37:27 2026 +0800
+
+    Update LIBRESPOT_REF to v0.8.0
+    
+    Updated LIBRESPOT_REF to v0.8.0 for stability and fixes.
+
+[1mdiff --git a/.github/workflows/build-librespot.yml b/.github/workflows/build-librespot.yml[m
+[1mindex d646c1a..0de76a6 100644[m
+[1m--- a/.github/workflows/build-librespot.yml[m
+[1m+++ b/.github/workflows/build-librespot.yml[m
+[36m@@ -18,7 +18,12 @@[m [mon:[m
+ env:[m
+   # Pin this to an exact upstream commit SHA (preferred) or tag. Never track a branch head.[m
+   LIBRESPOT_REPO: "https://github.com/librespot-org/librespot.git"[m
+[31m-  LIBRESPOT_REF: "v0.6.0"   # <-- update deliberately; every change here is a reviewable diff[m
+[32m+[m[32m  # v0.6.0 hit a Spotify-side backend change that broke content resolution for every librespot[m
+[32m+[m[32m  # client ("Track should be available, but no alternatives found" / tracks reported "not[m
+[32m+[m[32m  # available" for everything) -- tracked upstream as librespot-org/librespot#1527, fixed in[m
+[32m+[m[32m  # v0.7.0. Pinned to v0.8.0 (latest stable as of this writing) rather than v0.7.0 exactly, since[m
+[32m+[m[32m  # it includes that fix plus everything else merged since.[m
+[32m+[m[32m  LIBRESPOT_REF: "v0.8.0"   # <-- update deliberately; every change here is a reviewable diff[m
+ [m
+ permissions:[m
+   contents: write[m
+[36m@@ -43,7 +48,7 @@[m [mjobs:[m
+             artifact_name: librespot[m
+             asset_name: librespot-linux-x86_64[m
+ [m
+[31m-          - os: macos-15-intel        # Intel runner[m
+[32m+[m[32m          - os: macos-13        # Intel runner[m
+             target: x86_64-apple-darwin[m
+             artifact_name: librespot[m
+             asset_name: librespot-macos-x86_64[m

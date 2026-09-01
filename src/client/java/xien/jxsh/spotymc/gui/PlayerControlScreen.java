@@ -13,6 +13,7 @@ import xien.jxsh.spotymc.gui.render.DrawUtil;
 import xien.jxsh.spotymc.gui.render.HoverTracker;
 import xien.jxsh.spotymc.gui.render.LeftPanelRenderer;
 import xien.jxsh.spotymc.gui.render.QueuePanelRenderer;
+import xien.jxsh.spotymc.gui.render.TextLayout;
 import xien.jxsh.spotymc.gui.render.Theme;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -69,6 +70,11 @@ public class PlayerControlScreen extends Screen {
 	private EditBox clientIdField;
 	private EditBox searchField;
 	private String statusMessage = "";
+	// Cache for the wrapped statusMessage lines drawn in extractRenderState() -- see the wrap call
+	// below for why.
+	private String lastStatusMessage = null;
+	private int lastStatusMessageMaxW = -1;
+	private List<String> cachedStatusMessageLines = List.of();
 
 	// One shared background executor for this screen's async actions (play/pause/skip/search/etc).
 	// Previously each action spun up its own Executors.newSingleThreadExecutor(), which leaks a
@@ -120,8 +126,23 @@ public class PlayerControlScreen extends Screen {
 
 	@Override
 	public void removed() {
-		bgExecutor.shutdownNow();
+		// Deliberately does NOT shut down bgExecutor here. removed() fires any time this screen
+		// stops being the active one -- including when it's merely swapped out for a *child*
+		// screen (e.g. clicking Settings below), which reuses this exact instance as `parent`
+		// and hands it back via minecraft.gui.setScreen(parent) rather than constructing a new
+		// PlayerControlScreen. Since bgExecutor (and BrowseController, which was built with it)
+		// are final fields set once in the constructor, shutting the pool down here would leave
+		// this reused instance permanently unable to run any async action -- play/pause/skip,
+		// volume, search, library loads, and queue-skip clicks would all start throwing
+		// RejectedExecutionException the moment you navigate back from Settings. Real shutdown
+		// happens in onClose() instead, which only fires on an actual close.
 		super.removed();
+	}
+
+	@Override
+	public void onClose() {
+		bgExecutor.shutdownNow();
+		super.onClose();
 	}
 
 	@Override
@@ -305,14 +326,11 @@ public class PlayerControlScreen extends Screen {
 		ModConfig cfg = ModConfig.get();
 		cfg.librespotEnabled = !cfg.librespotEnabled;
 		cfg.save();
-		if (cfg.librespotEnabled && (cfg.librespotPath == null || cfg.librespotPath.isBlank())) {
-			statusMessage = "Set librespotPath in config/spotymc/config.json first";
-		} else {
-			// Don't set a "Starting in-game audio..." message here -- the audio status line drawn
-			// by CenterPanelRenderer already tracks the real, live state (starting/failed/playing),
-			// so a one-shot message here would just go stale the moment that state changes.
-			statusMessage = "";
-		}
+		// Don't set a status message here either way -- the audio status line drawn by
+		// CenterPanelRenderer already tracks the real, live state (not installed/starting/
+		// failed/playing) in friendlier terms, so a one-shot message here would just duplicate
+		// (and go stale faster than) that.
+		statusMessage = "";
 		if (audioToggleButton != null) {
 			audioToggleButton.setMessage(Component.literal("In-Game Audio: " + (cfg.librespotEnabled ? "ON" : "OFF")));
 		}
@@ -407,20 +425,30 @@ public class PlayerControlScreen extends Screen {
 		progressBarBounds = CenterPanelRenderer.render(graphics, this.font, layout, poller, mouseX, mouseY,
 				draggingProgress, dragPreviewProgressMs);
 
-		LeftPanelRenderer.RenderResult leftResult = LeftPanelRenderer.render(graphics, this.font, mouseX, mouseY, layout, browse, leftListHoverTracker);
-		searchHits.clear();
-		searchHits.addAll(leftResult.hits());
+		LeftPanelRenderer.RenderResult leftResult = LeftPanelRenderer.render(graphics, this.font, mouseX, mouseY,
+				layout, browse, leftListHoverTracker, searchHits);
 		scrollbarBounds = leftResult.scrollbar();
 
 		QueuePanelRenderer.RenderResult queueResult = QueuePanelRenderer.render(graphics, this.font, mouseX, mouseY,
-				layout, poller, queueScrollOffset, queueHoverTracker);
-		queueHits.clear();
-		queueHits.addAll(queueResult.hits());
+				layout, poller, queueScrollOffset, queueHoverTracker, queueHits);
 		queueScrollbarBounds = queueResult.scrollbar();
 		queueScrollOffset = queueResult.scrollOffset();
 
 		if (!statusMessage.isEmpty()) {
-			DrawUtil.drawCentered(graphics, this.font, statusMessage, layout.centerMidX, layout.panelTop + layout.panelH - 12, 0xFFFF5555);
+			int wrapW = layout.centerW - 16;
+			// statusMessage only changes on the (comparatively rare) action outcomes, so cache its
+			// wrap result instead of re-wrapping the same text on every single frame it's shown.
+			if (!statusMessage.equals(lastStatusMessage) || wrapW != lastStatusMessageMaxW) {
+				lastStatusMessage = statusMessage;
+				lastStatusMessageMaxW = wrapW;
+				cachedStatusMessageLines = TextLayout.wrapText(this.font, statusMessage, wrapW);
+			}
+			int lineH = 10;
+			int y = layout.panelTop + layout.panelH - 12 - (cachedStatusMessageLines.size() - 1) * lineH;
+			for (String line : cachedStatusMessageLines) {
+				DrawUtil.drawCentered(graphics, this.font, line, layout.centerMidX, y, 0xFFFF5555);
+				y += lineH;
+			}
 		}
 	}
 
@@ -615,7 +643,7 @@ public class PlayerControlScreen extends Screen {
 		// mapping's queued clicks while no screen is open, so that path can open this screen but
 		// never close it again. keyPressed always fires regardless, the same way Esc already does.
 		if (event.key() == Spotymc.TOGGLE_KEYCODE) {
-			minecraft.gui.setScreen(null);
+			this.onClose();
 			return true;
 		}
 		if (searchField != null && searchField.isFocused()

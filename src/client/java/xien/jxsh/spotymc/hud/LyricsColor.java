@@ -5,6 +5,10 @@ package xien.jxsh.spotymc.hud;
  * RGB values Minecraft has always used for its chat/sign/book text colors (§f, §e, etc.),
  * hardcoded here rather than pulled from {@code ChatFormatting} at runtime since that class's
  * color-lookup method has moved around between versions.
+ * <p>
+ * All values are compile-time constants; {@link #argb()} is a pure bit operation and
+ * {@link #byName(String)} is an enum lookup. Both are safe to call every frame, but callers
+ * that already know the name is stable (e.g. LyricsHud) should still cache the result.
  */
 public enum LyricsColor {
     WHITE("White", 0xFFFFFF),

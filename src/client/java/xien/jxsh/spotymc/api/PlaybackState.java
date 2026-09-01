@@ -1,5 +1,11 @@
 package xien.jxsh.spotymc.api;
 
+/**
+ * Immutable snapshot of the current Spotify playback state.
+ * All fields are final; optimistic updates produce a new instance via the
+ * {@code withOptimistic*} helpers so readers on other threads never see a
+ * half-updated object.
+ */
 public class PlaybackState {
     public final boolean isPlaying;
     public final String trackId;
@@ -33,11 +39,14 @@ public class PlaybackState {
 
     /** Empty/idle state, e.g. when nothing is playing or the user isn't logged in yet. */
     public static final PlaybackState NOTHING_PLAYING =
-            new PlaybackState(false, null, null, null, null, 0, 0, 0, null, null, System.currentTimeMillis());
+            new PlaybackState(false, null, null, null, null, 0, 0, 0, null, null, 0L);
 
-    /** Estimated current progress, interpolated between polls so the HUD doesn't visibly stutter. */
+    /**
+     * Estimated current progress, interpolated between polls so the HUD / progress bar
+     * don't visibly stutter. Cheap arithmetic only — safe to call every frame.
+     */
     public int estimatedProgressMs() {
-        if (!isPlaying) return progressMs;
+        if (!isPlaying || durationMs <= 0) return progressMs;
         long elapsed = System.currentTimeMillis() - fetchedAtMillis;
         return (int) Math.min(durationMs, progressMs + elapsed);
     }
@@ -47,9 +56,21 @@ public class PlaybackState {
      * Used to reflect a seek instantly in the UI, ahead of the next real poll confirming it.
      */
     public PlaybackState withOptimisticProgress(int newProgressMs) {
-        int clamped = Math.clamp(durationMs, 0, newProgressMs);
+        // Math.clamp(value, min, max) — previous code had the arguments swapped.
+        int clamped = Math.clamp(newProgressMs, 0, Math.max(0, durationMs));
         return new PlaybackState(isPlaying, trackId, title, artists, albumName,
                 clamped, durationMs, volumePercent, deviceId, deviceName, System.currentTimeMillis());
+    }
+
+    /**
+     * Copy of this state with volumePercent overridden. Used so rapid/held volume nudges
+     * compound correctly instead of all reading the same stale polled value.
+     * Leaves fetchedAtMillis untouched so progress interpolation is not reset.
+     */
+    public PlaybackState withOptimisticVolume(int newVolumePercent) {
+        int clamped = Math.clamp(newVolumePercent, 0, 100);
+        return new PlaybackState(isPlaying, trackId, title, artists, albumName,
+                progressMs, durationMs, clamped, deviceId, deviceName, fetchedAtMillis);
     }
 
     public record QueueItem(String id, String title, String artists) {}

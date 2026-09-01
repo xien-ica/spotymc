@@ -10,22 +10,24 @@ package xien.jxsh.spotymc.gui.render;
  */
 public final class HoverTracker {
 
-    private Object hoveredKey;
+    private static final int NONE = -1;
+
+    private int hoveredKey = NONE;
     private long hoverStartMs;
 
     /**
-     * Call once per frame with whichever row (identified by any stable, equals()-able key -- e.g.
-     * its index in the full list) is hovered this frame, or {@code null} if nothing is.
+     * Call once per frame with whichever row (identified by its index in the full list) is
+     * hovered this frame, or a negative value (both callers already use -1) if nothing is.
      *
      * @return how long (ms) that row has been continuously hovered, or -1 if nothing's hovered
      *         this frame.
      */
-    public long update(Object keyThisFrame, long nowMs) {
-        if (keyThisFrame == null) {
-            hoveredKey = null;
+    public long update(int keyThisFrame, long nowMs) {
+        if (keyThisFrame < 0) {
+            hoveredKey = NONE;
             return -1;
         }
-        if (!keyThisFrame.equals(hoveredKey)) {
+        if (keyThisFrame != hoveredKey) {
             hoveredKey = keyThisFrame;
             hoverStartMs = nowMs;
         }

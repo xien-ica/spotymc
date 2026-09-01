@@ -7,7 +7,6 @@ import xien.jxsh.spotymc.gui.layout.PanelLayout;
 import xien.jxsh.spotymc.gui.model.ClickableRowHit;
 import xien.jxsh.spotymc.gui.model.RowEntry;
 
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -58,10 +57,15 @@ public final class LeftPanelRenderer {
 		}
 	}
 
-	/** Renders the left panel for the current frame and returns this frame's clickable row hit-boxes. */
+	/**
+	 * Renders the left panel for the current frame and returns this frame's clickable row hit-boxes.
+	 * {@code hits} is the caller's own reusable list (e.g. a screen field): this clears and refills it
+	 * in place rather than handing back a brand-new list every frame for the caller to copy out of.
+	 */
 	public static RenderResult render(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY,
-	                                  PanelLayout layout, BrowseController browse, HoverTracker hoverTracker) {
-		List<ClickableRowHit> hits = new ArrayList<>();
+	                                  PanelLayout layout, BrowseController browse, HoverTracker hoverTracker,
+	                                  List<ClickableRowHit> hits) {
+		hits.clear();
 
 		if (browse.mode() == BrowseController.Mode.LIBRARY) {
 			if (browse.isLoadingLibrary() && browse.hasLibraryLoaded()) {
@@ -89,7 +93,7 @@ public final class LeftPanelRenderer {
 		if (entries.isEmpty()) {
 			graphics.text(font, TextLayout.fitText(font, emptyMessage, layout.leftListLabelBudget),
 					layout.listLeftX, layout.leftListY, Theme.TEXT_DIM, false);
-			hoverTracker.update(null, System.currentTimeMillis());
+			hoverTracker.update(-1, System.currentTimeMillis());
 			return RenderResult.hitsOnly(hits);
 		}
 
@@ -120,7 +124,7 @@ public final class LeftPanelRenderer {
 			}
 		}
 		long now = System.currentTimeMillis();
-		long hoverElapsedMs = hoverTracker.update(hoveredEntryIndex >= 0 ? hoveredEntryIndex : null, now);
+		long hoverElapsedMs = hoverTracker.update(hoveredEntryIndex, now);
 
 		// Clip strictly to the list's content area -- and, when a scrollbar is showing, to the
 		// *narrowed* labelBudget rather than the full one, so a marquee-scrolling row's untruncated

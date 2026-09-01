@@ -2,9 +2,12 @@ package xien.jxsh.spotymc.lyrics;
 
 /**
  * A small, vanilla-friendly color palette for the lyric HUD line. These are the same 16 fixed
- * RGB values Minecraft has always used for its chat/sign/book text colors (\u00a7f, \u00a7e, etc.),
+ * RGB values Minecraft has always used for its chat/sign/book text colors (§f, §e, etc.),
  * hardcoded here rather than pulled from {@code ChatFormatting} at runtime since that class's
  * color-lookup method has moved around between versions.
+ * <p>
+ * All values are compile-time constants; {@link #argb()} is a pure bit operation.
+ * {@link #values()} is cached so {@link #next()} never allocates the enum array.
  */
 public enum LyricsColor {
     WHITE("White", 0xFFFFFF),
@@ -15,6 +18,9 @@ public enum LyricsColor {
     LIGHT_PURPLE("Pink", 0xFF55FF),
     RED("Red", 0xFF5555),
     GRAY("Gray", 0xAAAAAA);
+
+    /** Cached once; enum.values() would otherwise allocate a new array on every call. */
+    private static final LyricsColor[] VALUES = values();
 
     public final String label;
     private final int rgb;
@@ -31,8 +37,7 @@ public enum LyricsColor {
 
     /** Next entry in the palette, wrapping around -- used by the settings screen's cycle button. */
     public LyricsColor next() {
-        LyricsColor[] all = values();
-        return all[(ordinal() + 1) % all.length];
+        return VALUES[(ordinal() + 1) % VALUES.length];
     }
 
     /** Looks up a palette entry by its enum name (as stored in ModConfig), falling back to WHITE. */

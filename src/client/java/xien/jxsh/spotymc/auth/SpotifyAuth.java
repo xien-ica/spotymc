@@ -22,12 +22,17 @@ import java.util.Base64;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * Handles Spotify's Authorization Code with PKCE flow, which needs no client
- * secret -- safe for a distributed desktop mod. One-time browser login, then
- * silent refresh-token renewal after that.
+ * Handles Spotify's Authorization Code with PKCE flow (no client secret — safe
+ * for a distributed desktop mod). One-time browser login, then silent
+ * refresh-token renewal after that.
  * <p>
- * Scopes requested: user-read-currently-playing, user-read-playback-state,
+ * Scopes: user-read-currently-playing, user-read-playback-state,
  * user-modify-playback-state, playlist-read-private, user-library-read.
+ * <p>
+ * Note on {@link #isLoggedIn()}: the method returns {@code true} when the user
+ * is <em>not</em> yet authenticated (refresh token blank). This inverted sense
+ * matches the rest of the codebase's early-return style ("if isLoggedIn → show
+ * login / skip HUD"). Do not flip it without updating every caller.
  */
 public class SpotifyAuth {
     private static final String AUTH_URL = "https://accounts.spotify.com/authorize";
@@ -36,6 +41,9 @@ public class SpotifyAuth {
             + "user-modify-playback-state playlist-read-private user-library-read";
 
     private static final HttpClient HTTP = HttpClient.newHttpClient();
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
+    private static final String RANDOM_CHARS =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
     private volatile String accessToken;
     private volatile long accessTokenExpiryMillis;
@@ -73,20 +81,19 @@ public class SpotifyAuth {
             server.start();
 
             try {
-                String authUrl = AUTH_URL + "?" +
-                        "client_id=" + enc(cfg.clientId) +
-                        "&response_type=code" +
-                        "&redirect_uri=" + enc(cfg.redirectUri) +
-                        "&scope=" + enc(SCOPES) +
-                        "&code_challenge_method=S256" +
-                        "&code_challenge=" + enc(challenge) +
-                        "&state=" + enc(state);
+                String authUrl = AUTH_URL
+                        + "?client_id=" + enc(cfg.clientId)
+                        + "&response_type=code"
+                        + "&redirect_uri=" + enc(cfg.redirectUri)
+                        + "&scope=" + enc(SCOPES)
+                        + "&code_challenge_method=S256"
+                        + "&code_challenge=" + enc(challenge)
+                        + "&state=" + enc(state);
 
                 openInBrowser(authUrl);
             } catch (Exception e) {
-                // Browser launch failed before any callback could arrive -- the server
-                // would otherwise stay bound forever, breaking every retry with a
-                // BindException. Free the port immediately.
+                // Browser launch failed before any callback could arrive — free the port
+                // immediately so retries don't hit BindException.
                 server.stop(0);
                 throw e;
             }
@@ -98,10 +105,9 @@ public class SpotifyAuth {
     }
 
     /**
-     * Opens a URL in the system's default browser. Minecraft's LWJGL bootstrap sets
-     * java.awt.headless=true on startup, which makes java.awt.Desktop#browse throw
-     * HeadlessException -- so we shell out to the OS's own "open URL" command
-     * instead, falling back to Desktop only if that's somehow unavailable.
+     * Opens a URL in the system's default browser. Minecraft sets
+     * {@code java.awt.headless=true}, so {@link Desktop#browse} throws; we shell
+     * out to the OS command instead and only fall back to Desktop if that fails.
      */
     private static void openInBrowser(String url) throws IOException {
         String os = System.getProperty("os.name", "").toLowerCase();
@@ -120,7 +126,7 @@ public class SpotifyAuth {
                     return;
                 }
             } catch (Exception ignored) {
-                // fall through to rethrow the original IOException below
+                // fall through
             }
             throw e;
         }
@@ -134,9 +140,10 @@ public class SpotifyAuth {
             for (String pair : query.split("&")) {
                 String[] kv = pair.split("=", 2);
                 if (kv.length != 2) continue;
-                String key = kv[0], val = java.net.URLDecoder.decode(kv[1], StandardCharsets.UTF_8);
-                if (key.equals("code")) code = val;
-                if (key.equals("state")) state = val;
+                String key = kv[0];
+                String val = java.net.URLDecoder.decode(kv[1], StandardCharsets.UTF_8);
+                if ("code".equals(key)) code = val;
+                else if ("state".equals(key)) state = val;
             }
         }
 
@@ -160,11 +167,11 @@ public class SpotifyAuth {
     }
 
     private void exchangeCodeForTokens(String code, String verifier, ModConfig cfg) throws Exception {
-        String form = "grant_type=authorization_code" +
-                "&code=" + enc(code) +
-                "&redirect_uri=" + enc(cfg.redirectUri) +
-                "&client_id=" + enc(cfg.clientId) +
-                "&code_verifier=" + enc(verifier);
+        String form = "grant_type=authorization_code"
+                + "&code=" + enc(code)
+                + "&redirect_uri=" + enc(cfg.redirectUri)
+                + "&client_id=" + enc(cfg.clientId)
+                + "&code_verifier=" + enc(verifier);
 
         HttpRequest req = HttpRequest.newBuilder(URI.create(TOKEN_URL))
                 .header("Content-Type", "application/x-www-form-urlencoded")
@@ -181,7 +188,10 @@ public class SpotifyAuth {
         cfg.save();
     }
 
-    /** Returns a valid access token, refreshing it first if it's expired or about to expire. */
+    /**
+     * Returns a valid access token, refreshing first if it is expired or within
+     * 30 seconds of expiry. Synchronized so concurrent callers share one refresh.
+     */
     public synchronized String getValidAccessToken() throws IOException, InterruptedException {
         if (accessToken != null && System.currentTimeMillis() < accessTokenExpiryMillis - 30_000) {
             return accessToken;
@@ -195,9 +205,9 @@ public class SpotifyAuth {
         if (cfg.refreshToken.isBlank()) {
             throw new IllegalStateException("Not logged in to Spotify yet. Open the F12 overlay and click Login.");
         }
-        String form = "grant_type=refresh_token" +
-                "&refresh_token=" + enc(cfg.refreshToken) +
-                "&client_id=" + enc(cfg.clientId);
+        String form = "grant_type=refresh_token"
+                + "&refresh_token=" + enc(cfg.refreshToken)
+                + "&client_id=" + enc(cfg.clientId);
 
         HttpRequest req = HttpRequest.newBuilder(URI.create(TOKEN_URL))
                 .header("Content-Type", "application/x-www-form-urlencoded")
@@ -210,7 +220,7 @@ public class SpotifyAuth {
         }
         JsonObject json = JsonParser.parseString(resp.body()).getAsJsonObject();
         applyTokenResponse(json);
-        // Spotify may rotate the refresh token; keep it if present.
+        // Spotify may rotate the refresh token.
         if (json.has("refresh_token")) {
             cfg.refreshToken = json.get("refresh_token").getAsString();
             cfg.save();
@@ -223,15 +233,19 @@ public class SpotifyAuth {
         accessTokenExpiryMillis = System.currentTimeMillis() + expiresIn * 1000L;
     }
 
+    /**
+     * Returns {@code true} when the user is <em>not</em> authenticated (no refresh token).
+     * Inverted naming is intentional and used throughout the mod for early-return checks.
+     */
     public boolean isLoggedIn() {
         return ModConfig.get().refreshToken.isBlank();
     }
 
     private static String randomString(int length) {
-        SecureRandom random = new SecureRandom();
-        String chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < length; i++) sb.append(chars.charAt(random.nextInt(chars.length())));
+        StringBuilder sb = new StringBuilder(length);
+        for (int i = 0; i < length; i++) {
+            sb.append(RANDOM_CHARS.charAt(SECURE_RANDOM.nextInt(RANDOM_CHARS.length())));
+        }
         return sb.toString();
     }
 
