@@ -70,6 +70,16 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # aws-lc-sys (pulled in via rustls) mis-detects the compiler on Windows without a properly
+      # initialized MSVC environment, and ends up passing GCC-style flags (e.g. -Wno-unused-parameter)
+      # to cl.exe, which rejects them with "D8021: invalid numeric argument". This sets up vcvars
+      # correctly before the build runs.
+      - name: Setup MSVC environment (Windows only)
+        if: matrix.os == 'windows-latest'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       # ring (pulled in via rustls) needs NASM to assemble its optimized routines on Windows;
       # Linux/macOS don't hit this since they use different codegen paths. Speculative fix for
       # the windows-latest job's build failure -- confirm against the actual error log too.
