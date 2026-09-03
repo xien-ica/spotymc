@@ -9,6 +9,7 @@ import xien.jxsh.spotymc.config.ModConfig;
 import xien.jxsh.spotymc.lyrics.LyricLine;
 import xien.jxsh.spotymc.lyrics.LyricsService;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -46,6 +47,19 @@ public class PlaybackPoller {
 	private final AtomicReference<List<PlaybackState.QueueItem>> queue = new AtomicReference<>(List.of());
 	private volatile String lastTrackId = null;
 	private volatile String lastError = null;
+	/**
+	 * Non-null when the Web API tier is unusable (no/invalid Client ID) while the audio tier
+	 * (librespot) is still allowed to run independently. Read by the renderers so Search/
+	 * Library/Queue/Now-Playing show one honest explanation instead of silently staying empty.
+	 */
+	private volatile String webApiDisabledReason = null;
+	/**
+	 * Detailed, multi-line breakdown of *why* the Web API tier is disabled -- e.g. which specific
+	 * config.json field(s) are blank. Kept separate from {@link #webApiDisabledReason} (which is
+	 * a short label suitable for the center/queue panels) so the full explanation only has to be
+	 * rendered once, by the left panel, instead of being repeated verbatim in three places.
+	 */
+	private volatile List<String> webApiDiagnosticLines = List.of();
 
 	// --- In-game audio (librespot) ---
 	private LibrespotProcess librespot;
@@ -158,11 +172,35 @@ public class PlaybackPoller {
 	}
 
 	private void poll() {
-		if (auth.isLoggedIn()) return;
+		if (auth.isLoggedIn()) {
+			// Never logged in at all -- the login screen handles this case, and there's
+			// nothing to poll yet. Audio can still run independently either way.
+			maintainAudio();
+			return;
+		}
+
+		if (!auth.hasWebApiCredentials()) {
+			// A refreshToken exists from an earlier login, but clientId has since been
+			// removed from config.json. Don't retry every 2s against a call that's
+			// guaranteed to fail (Spotify rejects a blank client_id on refresh) -- just
+			// surface why the Web-API-backed UI isn't updating, and keep going with audio.
+			SpotifyAuth.CredentialStatus credStatus = SpotifyAuth.checkCredentials();
+			webApiDisabledReason = "Web features unavailable";
+			webApiDiagnosticLines = buildMissingCredentialLines(credStatus);
+			state.set(PlaybackState.NOTHING_PLAYING);
+			currentLyrics.set(List.of());
+			queue.set(List.of());
+			lastTrackId = null;
+			maintainAudio();
+			return;
+		}
+
 		try {
 			PlaybackState newState = api.getCurrentPlayback();
 			state.set(newState);
 			lastError = null;
+			webApiDisabledReason = null;
+			webApiDiagnosticLines = List.of();
 
 			if (newState.trackId != null && !newState.trackId.equals(lastTrackId)) {
 				lastTrackId = newState.trackId;
@@ -190,6 +228,23 @@ public class PlaybackPoller {
 			}
 		} catch (Exception e) {
 			lastError = e.getMessage();
+			// Spotify rejecting the client_id itself (as opposed to a transient network/5xx
+			// blip) means the Web API tier is unusable until the user fixes it -- surface that
+			// distinctly rather than a generic error that repeats every 2s.
+			if (e.getMessage() != null && e.getMessage().contains("invalid_client")) {
+				webApiDisabledReason = "Web features unavailable";
+				webApiDiagnosticLines = List.of(
+						"⚠ Client ID: Invalid",
+						"Please check config.json");
+			} else if (e.getMessage() != null && e.getMessage().contains("invalid_grant")) {
+				// The refresh token itself was revoked/expired (e.g. access pulled from the
+				// user's Spotify account page) -- no amount of retrying fixes this, it needs a
+				// fresh browser login via the "Re-authenticate" button in Settings.
+				webApiDisabledReason = "Spotify login expired";
+				webApiDiagnosticLines = List.of(
+						"⚠ Refresh Token: Invalid",
+						"Re-authenticate in Settings");
+			}
 		}
 
 		maintainAudio();
@@ -297,6 +352,48 @@ public class PlaybackPoller {
 
 	public PlaybackState getState() {
 		return state.get();
+	}
+
+	/**
+	 * Non-null when the Web API tier (search, library, queue, lyrics, now-playing) is unusable
+	 * because no Client ID is configured or Spotify rejected it -- while librespot audio keeps
+	 * running independently. Renderers use this to show one honest message instead of leaving
+	 * their panels silently empty.
+	 */
+	public String getWebApiDisabledReason() {
+		return webApiDisabledReason;
+	}
+
+	/**
+	 * Full explanation behind {@link #getWebApiDisabledReason()} -- e.g. exactly which
+	 * config.json field(s) are blank or invalid, plus what to do about it. Rendered by the left
+	 * panel only, so this level of detail doesn't need to be repeated in the center/queue panels.
+	 */
+	public List<String> getWebApiDiagnosticLines() {
+		return webApiDiagnosticLines;
+	}
+
+	/**
+	 * Builds a human-friendly explanation of exactly which required Spotify config.json field(s)
+	 * are blank -- e.g. after someone hand-edits the file and drops a value by accident.
+	 */
+	private static List<String> buildMissingCredentialLines(SpotifyAuth.CredentialStatus status) {
+		List<String> missingNames = new ArrayList<>(3);
+		if (status.clientIdMissing()) missingNames.add("Client ID");
+		if (status.redirectUriMissing()) missingNames.add("Redirect URI");
+		if (status.refreshTokenMissing()) missingNames.add("Refresh Token");
+
+		List<String> lines = new ArrayList<>(missingNames.size() + 2);
+		if (missingNames.size() == 1) {
+			lines.add("Looks like your Spotify " + missingNames.get(0) + " is missing from config.json.");
+		} else {
+			lines.add("Looks like some required Spotify settings are missing from config.json.");
+		}
+		for (String name : missingNames) {
+			lines.add("⚠ " + name + ": Missing");
+		}
+		lines.add("Please check config.json");
+		return lines;
 	}
 
 	/**

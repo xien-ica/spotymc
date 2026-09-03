@@ -74,8 +74,52 @@ public class SpotifyApiClient {
 	private String withDeviceId(String path) throws IOException, InterruptedException {
 		String deviceId = resolveDeviceId();
 		if (deviceId == null) return path;
+		return appendDeviceId(path, deviceId);
+	}
+
+	/** Appends ?device_id=... (or &device_id=...) for an already-resolved device id. */
+	private static String appendDeviceId(String path, String deviceId) {
+		if (deviceId == null) return path;
 		String sep = path.contains("?") ? "&" : "?";
 		return path + sep + "device_id=" + URLEncoder.encode(deviceId, StandardCharsets.UTF_8);
+	}
+
+	/**
+	 * Explicitly makes {@code deviceId} the active Spotify Connect device, without starting
+	 * playback yet ({@code play: false}). Spotify's {@code /me/player/play} endpoint is
+	 * unreliable about actually switching to a device that isn't already active when there's
+	 * currently *no* active device at all (a cold start, e.g. nothing has played since Minecraft
+	 * launched) -- it can silently no-op or 404 instead of transferring. Calling the transfer
+	 * endpoint first is the documented workaround, and is what actually makes clicking a track
+	 * for the first time in a session reliably start audio in-game.
+	 */
+	private void transferPlayback(String deviceId) throws IOException, InterruptedException {
+		String body = "{\"device_ids\":[\"" + deviceId + "\"],\"play\":false}";
+		HttpResponse<String> resp = send("PUT", "/me/player", body);
+		if (resp.statusCode() >= 300) {
+			throw new IOException("Couldn't switch Spotify playback to \"" + ModConfig.get().librespotDeviceName
+					+ "\" (" + resp.statusCode() + "): " + resp.body());
+		}
+	}
+
+	/**
+	 * Resolves the in-game (librespot) device and makes sure it's active before a play call
+	 * targets it, so starting a track/playlist reliably lands in Minecraft instead of silently
+	 * failing or landing on whatever device happened to already be active. Returns null (no
+	 * transfer performed) when In-Game Audio is off, so those callers keep the old,
+	 * device-agnostic behaviour. Throws with a clear, user-facing message when In-Game Audio is
+	 * on but librespot hasn't registered itself with Spotify yet -- sending the play call anyway
+	 * would just silently miss the in-game device.
+	 */
+	private String resolveAndPrepareDevice() throws IOException, InterruptedException {
+		ModConfig cfg = ModConfig.get();
+		if (!cfg.librespotEnabled) return null;
+		String deviceId = resolveDeviceId();
+		if (deviceId == null) {
+			throw new IOException("Connect to \"" + cfg.librespotDeviceName + "\" in your Spotify app first.");
+		}
+		transferPlayback(deviceId);
+		return deviceId;
 	}
 
 	public PlaybackState getCurrentPlayback() throws IOException, InterruptedException {
@@ -140,8 +184,9 @@ public class SpotifyApiClient {
 	}
 
 	public void playPlaylist(String contextUri) throws IOException, InterruptedException {
+		String deviceId = resolveAndPrepareDevice();
 		String body = "{\"context_uri\":\"" + contextUri + "\"}";
-		send("PUT", withDeviceId("/me/player/play"), body);
+		send("PUT", appendDeviceId("/me/player/play", deviceId), body);
 	}
 
 	/**
@@ -214,12 +259,14 @@ public class SpotifyApiClient {
 	}
 
 	public void playTrack(String trackUri) throws IOException, InterruptedException {
+		String deviceId = resolveAndPrepareDevice();
 		String body = "{\"uris\":[\"" + trackUri + "\"]}";
-		send("PUT", withDeviceId("/me/player/play"), body);
+		send("PUT", appendDeviceId("/me/player/play", deviceId), body);
 	}
 
 	public void playTracks(List<String> trackUris) throws IOException, InterruptedException {
 		if (trackUris.isEmpty()) return;
+		String deviceId = resolveAndPrepareDevice();
 		StringBuilder sb = new StringBuilder(32 + trackUris.size() * 40);
 		sb.append("{\"uris\":[");
 		for (int i = 0; i < trackUris.size(); i++) {
@@ -227,7 +274,7 @@ public class SpotifyApiClient {
 			sb.append('"').append(trackUris.get(i)).append('"');
 		}
 		sb.append("]}");
-		send("PUT", withDeviceId("/me/player/play"), sb.toString());
+		send("PUT", appendDeviceId("/me/player/play", deviceId), sb.toString());
 	}
 
 	public List<PlaybackState.Playlist> searchPlaylists(String query) throws IOException, InterruptedException {

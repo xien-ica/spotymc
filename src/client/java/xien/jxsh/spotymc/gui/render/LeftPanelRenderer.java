@@ -7,6 +7,7 @@ import xien.jxsh.spotymc.gui.layout.PanelLayout;
 import xien.jxsh.spotymc.gui.model.ClickableRowHit;
 import xien.jxsh.spotymc.gui.model.RowEntry;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -67,6 +68,36 @@ public final class LeftPanelRenderer {
 	                                  List<ClickableRowHit> hits) {
 		hits.clear();
 
+		String webApiIssue = browse.webApiDisabledReason();
+		if (webApiIssue != null) {
+			// The diagnostic has two halves: a plain-English summary sentence (e.g. "Looks like
+			// your Spotify Client ID is missing from config.json.") and the actual per-field
+			// "⚠ Field: Missing" status plus the "check config.json" instruction. The summary
+			// stays up top, left-aligned like every other left-panel message; the status/
+			// instruction lines are pinned to the bottom of the panel and centered instead, so
+			// they read as a distinct footer rather than blending into the summary paragraph.
+			List<String> allLines = browse.webApiDiagnosticLines();
+			int splitIndex = 0;
+			while (splitIndex < allLines.size() && !allLines.get(splitIndex).startsWith("⚠")) {
+				splitIndex++;
+			}
+			List<String> summaryLines = allLines.subList(0, splitIndex);
+			List<String> footerLines = allLines.subList(splitIndex, allLines.size());
+
+			int y = layout.leftListY;
+			for (String rawLine : summaryLines) {
+				for (String wrapped : TextLayout.wrapText(font, rawLine, layout.leftListLabelBudget)) {
+					graphics.text(font, wrapped, layout.listLeftX, y, Theme.TEXT_DIM, false);
+					y += layout.rowH;
+				}
+			}
+
+			renderDiagnosticFooter(graphics, font, layout, footerLines);
+
+			hoverTracker.update(-1, System.currentTimeMillis());
+			return RenderResult.hitsOnly(hits);
+		}
+
 		if (browse.mode() == BrowseController.Mode.LIBRARY) {
 			if (browse.isLoadingLibrary() && browse.hasLibraryLoaded()) {
 				graphics.text(font, "Loading your library...", layout.listLeftX, layout.leftListY, Theme.TEXT_DIM, false);
@@ -85,6 +116,37 @@ public final class LeftPanelRenderer {
 		}
 
 		return renderRowList(graphics, font, mouseX, mouseY, layout, browse, browse.buildEntries(), "No results found", hits, hoverTracker);
+	}
+
+	/**
+	 * Draws the "⚠ Field: Missing" status line(s) plus the trailing "check config.json"
+	 * instruction as a centered block pinned to the bottom of the left panel. Every line is
+	 * wrapped up front so the total block height is known before picking a start y -- otherwise
+	 * the last line could still spill past the panel's bottom edge.
+	 */
+	private static void renderDiagnosticFooter(GuiGraphicsExtractor graphics, Font font, PanelLayout layout,
+	                                           List<String> footerLines) {
+		if (footerLines.isEmpty()) return;
+
+		int wrapW = layout.leftW - 20;
+		List<String> wrapped = new ArrayList<>();
+		List<Boolean> isWarning = new ArrayList<>();
+		for (String rawLine : footerLines) {
+			boolean warning = rawLine.startsWith("⚠");
+			for (String w : TextLayout.wrapText(font, rawLine, wrapW)) {
+				wrapped.add(w);
+				isWarning.add(warning);
+			}
+		}
+
+		int centerX = layout.leftX + layout.leftW / 2;
+		int listBottomY = layout.panelTop + layout.panelH - (int) Math.round(6 * layout.vScale);
+		int y = listBottomY - wrapped.size() * layout.rowH;
+		for (int i = 0; i < wrapped.size(); i++) {
+			int color = isWarning.get(i) ? 0xFFFFD966 : Theme.TEXT_DIM;
+			DrawUtil.drawCentered(graphics, font, wrapped.get(i), centerX, y, color);
+			y += layout.rowH;
+		}
 	}
 
 	private static RenderResult renderRowList(GuiGraphicsExtractor graphics, Font font, int mouseX, int mouseY,

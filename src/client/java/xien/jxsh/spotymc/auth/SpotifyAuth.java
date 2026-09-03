@@ -241,6 +241,36 @@ public class SpotifyAuth {
         return ModConfig.get().refreshToken.isBlank();
     }
 
+    /**
+     * True when the Web API can plausibly be used: a Client ID is configured AND a refresh
+     * token exists. Doesn't guarantee the token is still valid -- that's only found out when
+     * a request actually fails -- but it's enough to avoid hammering Spotify's token endpoint
+     * with calls that are guaranteed to fail (e.g. clientId wiped from config.json while an
+     * old refreshToken is still sitting there).
+     */
+    public boolean hasWebApiCredentials() {
+        ModConfig cfg = ModConfig.get();
+        return !cfg.clientId.isBlank() && !cfg.refreshToken.isBlank();
+    }
+
+    /**
+     * Snapshot of which config.json fields the Web API tier depends on are currently blank.
+     * clientId and refreshToken are needed for every call; redirectUri is only actually read
+     * during a fresh browser login, but a wiped config.json is worth flagging immediately rather
+     * than waiting for the user to hit "Login" and hit a confusing failure there instead.
+     */
+    public record CredentialStatus(boolean clientIdMissing, boolean redirectUriMissing, boolean refreshTokenMissing) {
+        public boolean anyMissing() {
+            return clientIdMissing || redirectUriMissing || refreshTokenMissing;
+        }
+    }
+
+    /** Reads config.json fresh so this always reflects the file's current on-disk contents. */
+    public static CredentialStatus checkCredentials() {
+        ModConfig cfg = ModConfig.get();
+        return new CredentialStatus(cfg.clientId.isBlank(), cfg.redirectUri.isBlank(), cfg.refreshToken.isBlank());
+    }
+
     private static String randomString(int length) {
         StringBuilder sb = new StringBuilder(length);
         for (int i = 0; i < length; i++) {

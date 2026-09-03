@@ -42,11 +42,23 @@ public final class CenterPanelRenderer {
 		}
 	}
 
+	/**
+	 * @param suppressAudioStatus true while the screen's own transient action-outcome banner
+	 *                            (e.g. a play-click error) is being shown at the bottom of this
+	 *                            same panel -- skips the persistent audio-status line so the two
+	 *                            don't render on top of each other.
+	 */
 	public static ProgressBarBounds render(GuiGraphicsExtractor graphics, Font font, PanelLayout layout,
-	                                       PlaybackPoller poller, int mouseX, int mouseY, boolean draggingProgress, int dragPreviewProgressMs) {
+	                                       PlaybackPoller poller, int mouseX, int mouseY, boolean draggingProgress,
+	                                       int dragPreviewProgressMs, boolean suppressAudioStatus) {
 		PlaybackState state = poller.getState();
 
-		String nowPlaying = state.trackId != null ? state.title + " — " + state.artists : "Nothing playing";
+		// When the Web API tier is unusable (no/invalid Client ID), show why instead of a
+		// blank "Nothing playing" -- audio (librespot) keeps running independently either way.
+		String webApiIssue = poller.getWebApiDisabledReason();
+		String nowPlaying = webApiIssue != null ? webApiIssue
+				: state.trackId != null ? state.title + " — " + state.artists : "Nothing playing";
+		int titleColor = webApiIssue != null ? 0xFFFFD966 : Theme.ACCENT; // same amber as the audio-status warning below
 		int maxW = layout.centerW - 16;
 		int titleY = layout.panelTop + layout.centerContentOffsetY + 6;
 		int titleLeft = layout.centerMidX - maxW / 2;
@@ -63,12 +75,12 @@ public final class CenterPanelRenderer {
 		int offset = TextLayout.marqueeOffset(nowMs - titleMarqueeStartMs, textW, maxW);
 
 		if (textW <= maxW) {
-			DrawUtil.drawCentered(graphics, font, nowPlaying, layout.centerMidX, titleY, Theme.ACCENT);
+			DrawUtil.drawCentered(graphics, font, nowPlaying, layout.centerMidX, titleY, titleColor);
 		} else {
 			// Clip to the title viewport so the scrolling full string never paints outside the
 			// center panel's content area (same idea as the list scissor rects).
 			graphics.enableScissor(titleLeft, titleY - 1, titleLeft + maxW, titleY + 10);
-			graphics.text(font, nowPlaying, titleLeft - offset, titleY, Theme.ACCENT, true);
+			graphics.text(font, nowPlaying, titleLeft - offset, titleY, titleColor, true);
 			graphics.disableScissor();
 		}
 
@@ -104,7 +116,9 @@ public final class CenterPanelRenderer {
 			graphics.text(font, total, barX + barW - totalTextW, barY + 6, Theme.TEXT_DIM, false);
 		}
 
-		renderAudioStatus(graphics, font, layout, poller);
+		if (!suppressAudioStatus) {
+			renderAudioStatus(graphics, font, layout, poller);
+		}
 		return bounds;
 	}
 

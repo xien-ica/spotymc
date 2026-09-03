@@ -41,6 +41,14 @@ public final class QueuePanelRenderer {
 		hits.clear();
 		graphics.text(font, "QUEUE", layout.listRightX, layout.panelTop + 8, Theme.ACCENT, false);
 
+		if (poller.getWebApiDisabledReason() != null) {
+			// Kept short and generic on purpose -- the left panel is where the actual reason
+			// (missing/invalid Client ID, Redirect URI, Refresh Token, etc.) is spelled out.
+			graphics.text(font, "Unavailable", layout.listRightX, layout.rightListY, Theme.TEXT_DIM, false);
+			hoverTracker.update(-1, System.currentTimeMillis());
+			return RenderResult.hitsOnly(hits, 0);
+		}
+
 		List<PlaybackState.QueueItem> queue = poller.getQueue();
 		if (queue.isEmpty()) {
 			graphics.text(font, "Queue is empty", layout.listRightX, layout.rightListY, Theme.TEXT_DIM, false);

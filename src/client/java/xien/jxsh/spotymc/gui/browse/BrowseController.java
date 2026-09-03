@@ -54,6 +54,15 @@ public final class BrowseController {
 		this.bgExecutor = bgExecutor;
 	}
 
+	/**
+	 * Non-null when the Web API tier is unusable (no/invalid Client ID). Renderers use this to
+	 * show one honest explanation in place of Search/Library results.
+	 */
+	public String webApiDisabledReason() { return poller.getWebApiDisabledReason(); }
+
+	/** Full per-field breakdown behind {@link #webApiDisabledReason()}, for the left panel. */
+	public List<String> webApiDiagnosticLines() { return poller.getWebApiDiagnosticLines(); }
+
 	public Mode mode() { return mode; }
 	public String searchQuery() { return searchQuery; }
 	public void setSearchQuery(String q) { this.searchQuery = q; }
@@ -119,6 +128,13 @@ public final class BrowseController {
 	 */
 	public void loadLibrary(Runnable onChanged, Consumer<String> onError) {
 		if (loadingLibrary) return;
+		if (webApiDisabledReason() != null) {
+			// Don't spend a background thread and a doomed HTTP round-trip on a call that
+			// can't succeed. LeftPanelRenderer already shows a full diagnostic for this before
+			// this can even be reached, so skip onError here too -- it would just duplicate that
+			// same explanation as a second banner at the bottom of the screen.
+			return;
+		}
 		loadingLibrary = true;
 		CompletableFuture<List<PlaybackState.Track>> likedFuture = CompletableFuture.supplyAsync(() -> {
 			try {
@@ -150,6 +166,10 @@ public final class BrowseController {
 	public void doSearch(Runnable onSearchStarted, Runnable onSearchFinished, Consumer<String> onError) {
 		String q = searchQuery.trim();
 		if (q.isEmpty() || searching) return;
+		if (webApiDisabledReason() != null) {
+			// Same reasoning as loadLibrary() above -- the left panel already covers this.
+			return;
+		}
 		searching = true;
 		scrollOffset = 0;
 		onSearchStarted.run();
