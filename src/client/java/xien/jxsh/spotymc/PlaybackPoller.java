@@ -145,6 +145,16 @@ public class PlaybackPoller {
 		runOnIoPool(api::next);
 	}
 
+	/** Pauses Spotify playback. Fire-and-forget. */
+	public void pausePlayback() {
+		runOnIoPool(api::pause);
+	}
+
+	/** Resumes Spotify playback. Fire-and-forget. */
+	public void resumePlayback() {
+		runOnIoPool(api::play);
+	}
+
 	/**
 	 * Nudges Spotify Connect volume by {@code deltaPercent}, clamped to 0-100.
 	 * Applies the change optimistically to the shared state first so rapid/held presses

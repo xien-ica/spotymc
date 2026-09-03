@@ -172,15 +172,28 @@ public final class PanelLayout {
 			leftListY = belowTabsY;
 		}
 
-		// Exact row budget for whatever's actually left below the header down to the panel's
-		// bottom border (rather than an approximation), so rows can never spill past it.
-		int leftListBottomY = panelTop + panelH - (int) Math.round(6 * vScale);
-		leftMaxRows = Math.max(MIN_LIST_ROWS, (leftListBottomY - leftListY) / rowH);
+		// Count a row whenever its ~9px glyph box still sits inside the clip rect, not only
+		// when a full rowH stride fits. The old (bottom - start) / rowH floor left a 9–17px
+		// dead zone under the last library row — one extra playlist name fits there, which is
+		// why the queue (same panel height) showed one more item.
+		leftMaxRows = visibleRows(leftListY);
 
 		listLeftX = leftX + 10;
 		leftListLabelBudget = listInnerW - 10;
 
 		listRightX = rightX + 10;
 		rightListY = panelTop + (int) Math.round(26 * vScale);
+	}
+
+	/**
+	 * How many list rows fit if we only require the text (vanilla font is 9px) to stay inside
+	 * the panel clip, rather than a full {@link #rowH} stride.
+	 */
+	public int visibleRows(int listY) {
+		int listBottomY = panelTop + panelH - (int) Math.round(6 * vScale);
+		int textH = 9;
+		int span = listBottomY - listY - textH;
+		if (span < 0) return MIN_LIST_ROWS;
+		return Math.max(MIN_LIST_ROWS, span / rowH + 1);
 	}
 }

@@ -1,5 +1,6 @@
 package xien.jxsh.spotymc;
 
+import xien.jxsh.spotymc.config.ModConfig;
 import xien.jxsh.spotymc.gui.PlayerControlScreen;
 import xien.jxsh.spotymc.hud.LyricsHud;
 import net.fabricmc.api.ClientModInitializer;
@@ -60,6 +61,11 @@ public class Spotymc implements ClientModInitializer {
     private static final int REPEAT_INITIAL_DELAY_TICKS = 10; // 500 ms at 20 TPS
     private static final int REPEAT_INTERVAL_TICKS = 3;       // 150 ms between repeats once ramped up
 
+    // Pause-music-with-game: only resume if *we* paused Spotify when the game paused,
+    // so a manually-paused track stays paused after the player unpauses Minecraft.
+    private boolean wasGamePaused = false;
+    private boolean musicPausedByMod = false;
+
     @Override
     public void onInitializeClient() {
         hud = new LyricsHud(poller);
@@ -99,6 +105,7 @@ public class Spotymc implements ClientModInitializer {
                 }
             }
             handleGlobalHotkeys(client);
+            handlePauseMusicWithGame(client);
         });
 
         HudElementRegistry.attachElementBefore(VanillaHudElements.CHAT,
@@ -175,5 +182,31 @@ public class Spotymc implements ClientModInitializer {
     /** True while a text-entry widget (search box, chat, sign, anvil name field, etc.) has focus. */
     private boolean isTypingInTextField(Minecraft client) {
         return client.gui.screen() != null && client.gui.screen().getFocused() instanceof EditBox;
+    }
+
+    /**
+     * When {@link ModConfig#pauseMusicWithGame} is on, pauses Spotify as the game enters a
+     * paused state and resumes only if this mod was the one that paused it.
+     * Uses rising/falling edges of {@link Minecraft#isPaused()} so we never spam the API.
+     */
+    private void handlePauseMusicWithGame(Minecraft client) {
+        boolean paused = client.isPaused();
+        if (!ModConfig.get().pauseMusicWithGame) {
+            wasGamePaused = paused;
+            musicPausedByMod = false;
+            return;
+        }
+        if (paused && !wasGamePaused) {
+            if (poller.getState().isPlaying) {
+                poller.pausePlayback();
+                musicPausedByMod = true;
+            }
+        } else if (!paused && wasGamePaused) {
+            if (musicPausedByMod) {
+                poller.resumePlayback();
+                musicPausedByMod = false;
+            }
+        }
+        wasGamePaused = paused;
     }
 }

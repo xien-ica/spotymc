@@ -82,13 +82,13 @@ public final class BrowseController {
 	/** Scrolls by one "notch"; direction should be -1 (up) or +1 (down). */
 	public void scrollBy(int direction, int total, int maxRows) {
 		int maxScroll = Math.max(0, total - maxRows);
-		scrollOffset = Math.clamp(maxScroll, 0, scrollOffset + direction);
+		scrollOffset = Math.clamp(scrollOffset + direction, 0, maxScroll);
 	}
 
 	/** Sets the scroll offset directly (e.g. from a scrollbar drag), clamped to a valid range. */
 	public void setScrollOffset(int offset, int total, int maxRows) {
 		int maxScroll = Math.max(0, total - maxRows);
-		scrollOffset = Math.clamp(maxScroll, 0, offset);
+		scrollOffset = Math.clamp(offset, 0, maxScroll);
 	}
 
 	public void switchMode(Mode newMode, Runnable onChanged) {

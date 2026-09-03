@@ -253,7 +253,7 @@ public final class PlayerControlInput {
         if (overRightPanel && queueTotal > layout.rightMaxRows) {
             int direction = scrollY > 0 ? -1 : (scrollY < 0 ? 1 : 0);
             int maxScroll = Math.max(0, queueTotal - layout.rightMaxRows);
-            queueScrollOffset = Math.clamp(maxScroll, 0, queueScrollOffset + direction);
+            queueScrollOffset = Math.clamp(queueScrollOffset + direction, 0, maxScroll);
             return true;
         }
         return false;

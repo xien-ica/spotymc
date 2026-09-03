@@ -159,17 +159,24 @@ public final class LeftPanelRenderer {
 			return RenderResult.hitsOnly(hits);
 		}
 
-		browse.clampScroll(entries.size(), layout.leftMaxRows);
+		int listBottomY = layout.panelTop + layout.panelH - (int) Math.round(6 * layout.vScale);
+		// Recompute from the clip rect + actual font height so a leftover strip that can
+		// still hold a line of text is used, matching the queue panel's packing.
+		int textH = Math.max(8, font.lineHeight);
+		int span = listBottomY - layout.leftListY - textH;
+		int maxRows = span < 0 ? PanelLayout.MIN_LIST_ROWS
+				: Math.max(PanelLayout.MIN_LIST_ROWS, span / layout.rowH + 1);
+		layout.leftMaxRows = maxRows;
+		browse.clampScroll(entries.size(), maxRows);
 		int scrollOffset = browse.scrollOffset();
 
-		int listBottomY = layout.panelTop + layout.panelH - (int) Math.round(6 * layout.vScale);
-		int maxScroll = Math.max(0, entries.size() - layout.leftMaxRows);
+		int maxScroll = Math.max(0, entries.size() - maxRows);
 
-		boolean needsScrollbar = entries.size() > layout.leftMaxRows;
+		boolean needsScrollbar = entries.size() > maxRows;
 		int labelBudget = needsScrollbar ? layout.leftListLabelBudget - 6 : layout.leftListLabelBudget;
 		int listRowH = layout.rowH - 1;
 
-		int shown = Math.min(entries.size() - scrollOffset, layout.leftMaxRows);
+		int shown = Math.min(entries.size() - scrollOffset, maxRows);
 
 		// Figure out which row (if any) is hovered *before* drawing, keyed by its position in the
 		// full entries list -- stable across frames as long as scrollOffset doesn't change mid-hover,
@@ -223,7 +230,7 @@ public final class LeftPanelRenderer {
 		int trackH = listBottomY - layout.leftListY;
 		graphics.fill(trackX, trackTop, trackX + 3, trackTop + trackH, 0x40FFFFFF);
 
-		int thumbH = Math.max(10, trackH * layout.leftMaxRows / entries.size());
+		int thumbH = Math.max(10, trackH * maxRows / entries.size());
 		int thumbY = trackTop + (maxScroll == 0 ? 0 : (trackH - thumbH) * scrollOffset / maxScroll);
 		graphics.fill(trackX, thumbY, trackX + 3, thumbY + thumbH, 0xB0FFFFFF);
 

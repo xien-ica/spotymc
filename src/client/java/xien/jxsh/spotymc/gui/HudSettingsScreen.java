@@ -51,6 +51,7 @@ public class HudSettingsScreen extends Screen {
 	private Button titleArtistToggleButton;
 	private Button lyricsNotesToggleButton;
 	private Button lyricsColorButton;
+	private Button pauseMusicWithGameButton;
 	private Button reauthButton;
 
 	/** Survival-mode note shown in place of the Title/Artist Height slider. */
@@ -175,6 +176,15 @@ public class HudSettingsScreen extends Screen {
 			c.save();
 		});
 
+		// Pause music when the game itself is paused (singleplayer Esc menu, etc.)
+		boolean pauseWithGame = cfg.pauseMusicWithGame;
+		pauseMusicWithGameButton = Button.builder(
+						Component.literal("Pause music when game paused: " + (pauseWithGame ? "ON" : "OFF")),
+						_ -> togglePauseMusicWithGame())
+				.bounds(cx - 130, 0, 260, 20).build();
+		addScrollable(pauseMusicWithGameButton, curY);
+		curY += 28;
+
 		// Librespot install / uninstall
 		curY = librespot.buildSection(cx, curY, cfg);
 
@@ -277,6 +287,16 @@ public class HudSettingsScreen extends Screen {
 		cfg.save();
 		if (lyricsColorButton != null) {
 			lyricsColorButton.setMessage(Component.literal("Color: " + nextColor.label));
+		}
+	}
+
+	private void togglePauseMusicWithGame() {
+		ModConfig cfg = ModConfig.get();
+		cfg.pauseMusicWithGame = !cfg.pauseMusicWithGame;
+		cfg.save();
+		if (pauseMusicWithGameButton != null) {
+			pauseMusicWithGameButton.setMessage(Component.literal(
+					"Pause music when game paused: " + (cfg.pauseMusicWithGame ? "ON" : "OFF")));
 		}
 	}
 
