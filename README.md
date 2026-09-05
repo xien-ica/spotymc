@@ -40,7 +40,7 @@ SpotyMC bundles precompiled binaries of [librespot](https://github.com/librespot
 
 ## License
 
-[Add your project's license here]
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
 
 ## Disclaimer
 
